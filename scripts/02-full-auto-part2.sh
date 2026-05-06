@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-STATE_DIR="/root/.part2-state"
+export TERM=xterm
+
+STATE_DIR="/root/.part2-iso-state"
 SECRETS_DIR="/root/.secrets"
 PART2_ENV="$SECRETS_DIR/part2.env"
 USERS_ENV="$SECRETS_DIR/users.env"
@@ -19,12 +21,26 @@ mark_step() {
 ask_secret() {
   local prompt="$1"
   local var=""
-  read -r -s -p "$prompt: " var </dev/tty
-  echo "" >/dev/tty
+
+  while true; do
+    printf "%s: " "$prompt"
+
+    stty -echo || true
+    read -r var
+    stty echo || true
+    echo
+
+    if [[ -n "$var" ]]; then
+      break
+    fi
+
+    echo "Boş bırakılamaz."
+  done
+
   printf "%s" "$var"
 }
 
-echo "🚀 Part2: TrueNAS API + VM oluşturma"
+echo "🚀 Part2 ISO Mode: TrueNAS API + Ubuntu ISO VM oluşturma"
 
 if [[ ! -f "$USERS_ENV" ]]; then
   echo "❌ $USERS_ENV yok. Önce Part1 çalışmalı."
@@ -36,7 +52,7 @@ source "$USERS_ENV"
 if [[ ! -f "$PART2_ENV" ]]; then
   echo
   echo "TrueNAS API key oluşturmak için TrueNAS Shell:"
-  echo "midclt call api_key.create '{\"name\": \"bacmaster-installer\", \"username\": \"truenas_admin\"}'"
+  echo "midclt call api_key.create '{\"name\":\"bacmaster-installer\",\"username\":\"truenas_admin\"}'"
   echo
   TRUENAS_KEY="$(ask_secret "TrueNAS API key yapıştır")"
 
@@ -45,11 +61,8 @@ TRUENAS_IP="192.168.50.101"
 TRUENAS_API_KEY="$TRUENAS_KEY"
 
 VM_STORAGE="nvme-vm"
-UBUNTU_IMAGE_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
-UBUNTU_IMAGE_FILE="/var/lib/vz/template/iso/noble-server-cloudimg-amd64.img"
+UBUNTU_ISO="local:iso/ubuntu-26.04-live-server-amd64.iso"
 
-CI_USER="$BACMASTER_USER"
-CI_PASS="$BACMASTER_PASS"
 GW="192.168.50.1"
 DNS="1.1.1.1"
 EOF
@@ -130,83 +143,12 @@ if ! done_step "truenas_datasets"; then
   echo "✅ TrueNAS dataset/NFS tamam"
 fi
 
-if ! done_step "ubuntu_image"; then
-  echo "📀 Ubuntu cloud image indiriliyor..."
-  mkdir -p /var/lib/vz/template/iso
-  wget -nc -O "$UBUNTU_IMAGE_FILE" "$UBUNTU_IMAGE_URL"
-  mark_step "ubuntu_image"
-fi
-
-if ! done_step "ubuntu_template"; then
-  echo "📦 Ubuntu template 9000 hazırlanıyor..."
-
-  if ! qm status 9000 &>/dev/null; then
-    qm create 9000 \
-      --name ubuntu-template \
-      --memory 2048 \
-      --cores 2 \
-      --cpu host \
-      --net0 virtio,bridge=vmbr0 \
-      --scsihw virtio-scsi-single \
-      --agent enabled=1
-
-    qm importdisk 9000 "$UBUNTU_IMAGE_FILE" "$VM_STORAGE"
-    qm set 9000 --scsi0 "$VM_STORAGE":vm-9000-disk-0,discard=on,ssd=1,iothread=1
-    qm set 9000 --ide2 "$VM_STORAGE":cloudinit
-    qm set 9000 --boot order=scsi0
-    qm set 9000 --serial0 socket
-    qm set 9000 --vga serial0
-    qm set 9000 --ciuser "$CI_USER"
-    qm set 9000 --cipassword "$CI_PASS"
-    qm set 9000 --nameserver "$DNS"
-    qm template 9000
-  fi
-
-  mark_step "ubuntu_template"
-fi
-
-if ! done_step "snippets"; then
-  echo "🧩 Cloud-init snippet hazırlanıyor..."
-
-  mkdir -p /var/lib/vz/snippets
-
-  cat > /var/lib/vz/snippets/bacmaster-docker.yaml <<EOF
-#cloud-config
-package_update: true
-package_upgrade: true
-
-packages:
-  - qemu-guest-agent
-  - nfs-common
-  - curl
-  - wget
-  - nano
-  - htop
-  - git
-  - ca-certificates
-
-runcmd:
-  - systemctl enable --now qemu-guest-agent
-  - curl -fsSL https://get.docker.com | sh
-  - usermod -aG docker $CI_USER
-  - mkdir -p /mnt/media
-  - echo '192.168.50.101:/mnt/tank/media /mnt/media nfs defaults,_netdev,x-systemd.automount,noatime 0 0' >> /etc/fstab
-  - systemctl daemon-reload
-  - mount -a || true
-  - mkdir -p /home/$CI_USER/docker
-  - chown -R $CI_USER:$CI_USER /home/$CI_USER/docker
-EOF
-
-  mark_step "snippets"
-fi
-
-create_vm() {
+create_iso_vm() {
   local ID="$1"
   local NAME="$2"
-  local IP="$3"
-  local RAM="$4"
-  local CORES="$5"
-  local DISK="$6"
+  local RAM="$3"
+  local CORES="$4"
+  local DISK="$5"
 
   if qm status "$ID" &>/dev/null; then
     echo "✅ VM $ID $NAME zaten var"
@@ -215,27 +157,39 @@ create_vm() {
 
   echo "🖥️ VM $ID $NAME oluşturuluyor..."
 
-  qm clone 9000 "$ID" --name "$NAME" --full true --storage "$VM_STORAGE"
-  qm set "$ID" --memory "$RAM" --cores "$CORES" --cpu host
-  qm resize "$ID" scsi0 "$DISK"
-  qm set "$ID" --ipconfig0 ip="${IP}/24,gw=${GW}"
-  qm set "$ID" --nameserver "$DNS"
-  qm set "$ID" --cicustom "user=local:snippets/bacmaster-docker.yaml"
-  qm set "$ID" --onboot 1
+  qm create "$ID" \
+    --name "$NAME" \
+    --memory "$RAM" \
+    --cores "$CORES" \
+    --cpu host \
+    --machine q35 \
+    --bios ovmf \
+    --scsihw virtio-scsi-single \
+    --net0 virtio,bridge=vmbr0 \
+    --agent enabled=1 \
+    --onboot 1 \
+    --balloon 0 \
+    --vga virtio
+
+  qm set "$ID" --efidisk0 "$VM_STORAGE":1,format=raw,efitype=4m
+  qm set "$ID" --scsi0 "$VM_STORAGE":"$DISK",discard=on,ssd=1,iothread=1
+  qm set "$ID" --ide2 "$UBUNTU_ISO",media=cdrom
+  qm set "$ID" --boot order=ide2
 }
 
 if ! done_step "vms"; then
-  echo "🖥️ VM'ler oluşturuluyor..."
+  echo "🖥️ Ubuntu ISO VM'leri oluşturuluyor..."
 
-  create_vm 103 docker-network 192.168.50.103 4096 2 32G
-  create_vm 102 docker-arr     192.168.50.102 8192 4 64G
-  create_vm 104 nextcloud      192.168.50.104 8192 4 64G
-  create_vm 105 homeassistant  192.168.50.105 4096 2 32G
-  create_vm 106 docker-media   192.168.50.106 24576 6 128G
-  create_vm 107 chia-farmer    192.168.50.107 8192 4 64G
-  create_vm 110 backup-server  192.168.50.110 8192 4 64G
+  create_iso_vm 103 docker-network 4096 2 32G
+  create_iso_vm 102 docker-arr     8192 4 64G
+  create_iso_vm 104 nextcloud      8192 4 64G
+  create_iso_vm 105 homeassistant  4096 2 32G
+  create_iso_vm 106 docker-media   24576 6 128G
+  create_iso_vm 107 chia-farmer    8192 4 64G
+  create_iso_vm 110 backup-server  8192 4 64G
 
   mark_step "vms"
+  echo "✅ VM'ler hazır"
 fi
 
 if ! done_step "start_vms"; then
@@ -246,13 +200,34 @@ if ! done_step "start_vms"; then
   done
 
   mark_step "start_vms"
+  echo "✅ VM'ler başlatıldı"
 fi
 
 echo
-echo "✅ PART2 tamamlandı."
+echo "🎯 PART2 ISO CHECKPOINT TAMAMLANDI"
 echo
-echo "Sonraki adım:"
-echo "cd /root/homelab"
-echo "bash install.sh"
+echo "Şimdi her VM için manuel Ubuntu Server kurulumu yap:"
+echo
+echo "VM102 docker-arr      IP: 192.168.50.102/24"
+echo "VM103 docker-network  IP: 192.168.50.103/24"
+echo "VM104 nextcloud       IP: 192.168.50.104/24"
+echo "VM105 homeassistant   IP: 192.168.50.105/24"
+echo "VM106 docker-media    IP: 192.168.50.106/24"
+echo "VM107 chia-farmer     IP: 192.168.50.107/24"
+echo "VM110 backup-server   IP: 192.168.50.110/24"
+echo
+echo "Gateway: 192.168.50.1"
+echo "DNS: 1.1.1.1"
+echo "Username: ${BACMASTER_USER}"
+echo "Password: Part1'de verdiğin admin password"
+echo
+echo "Her Ubuntu kurulumu bitince ilgili VM için:"
+echo "qm stop VMID"
+echo "qm set VMID --ide2 none"
+echo "qm set VMID --boot order=scsi0"
+echo "qm start VMID"
+echo
+echo "Tüm VM'ler kurulduktan sonra Part3:"
+echo "cd /root/homelab && bash install.sh"
 echo "seçim: 3"
 echo
