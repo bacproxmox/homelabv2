@@ -25,7 +25,8 @@ echo "📥 Repo indiriliyor..."
 
 if [[ -d "$TARGET_DIR/.git" ]]; then
   cd "$TARGET_DIR"
-  git pull
+  git fetch origin
+  git reset --hard origin/main
 else
   rm -rf "$TARGET_DIR"
   git clone "$REPO_URL" "$TARGET_DIR"
