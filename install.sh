@@ -1,6 +1,7 @@
-cat > install.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
+cd /root/homelab
 
 echo "🚀 Bacmaster HomeLab Installer"
 echo
@@ -12,19 +13,23 @@ echo
 read -rp "Seçim: " CHOICE
 
 case "$CHOICE" in
-  1) bash scripts/01-bootstrap-truenas.sh ;;
-  2) bash scripts/02-full-auto-part2.sh ;;
-  3) bash scripts/03-full-docker-stack.sh ;;
+  1)
+    bash scripts/01-bootstrap-truenas.sh
+    ;;
+  2)
+    bash scripts/02-full-auto-part2.sh
+    ;;
+  3)
+    bash scripts/03-full-docker-stack.sh
+    ;;
   all)
     bash scripts/01-bootstrap-truenas.sh
-    bash scripts/02-full-auto-part2.sh
-    bash scripts/03-full-docker-stack.sh
+    echo
+    echo "⚠️ TrueNAS manuel checkpoint var."
+    echo "TrueNAS kurulumu, pool ve API key tamamlandıktan sonra Part2 çalıştır."
     ;;
   *)
     echo "Geçersiz seçim."
     exit 1
     ;;
 esac
-EOF
-
-chmod +x install.sh
