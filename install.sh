@@ -3,41 +3,28 @@ set -euo pipefail
 
 export TERM=xterm
 
-REPO_URL="https://github.com/bacproxmox/homelabv2.git"
-TARGET_DIR="/root/homelab"
+cd /root/homelab
 
-echo "🚀 Bacmaster bootstrap başlıyor..."
-
-echo "🔧 Enterprise repo kapatılıyor..."
-
-rm -f /etc/apt/sources.list.d/pve-enterprise.sources
-rm -f /etc/apt/sources.list.d/ceph.sources
-rm -f /etc/apt/sources.list.d/pve-enterprise.list
-rm -f /etc/apt/sources.list.d/ceph.list
-
-. /etc/os-release
-
-echo "deb http://download.proxmox.com/debian/pve $VERSION_CODENAME pve-no-subscription" \
-  > /etc/apt/sources.list.d/pve-no-subscription.list
-
-apt update
-apt install -y git curl wget nano
-
-echo "📥 Repo indiriliyor..."
-
-if [[ -d "$TARGET_DIR/.git" ]]; then
-  cd "$TARGET_DIR"
-  git fetch origin
-  git reset --hard origin/main
-else
-  rm -rf "$TARGET_DIR"
-  git clone "$REPO_URL" "$TARGET_DIR"
-  cd "$TARGET_DIR"
-fi
-
-chmod +x install.sh
-chmod +x scripts/*.sh
-
-echo "✅ Bootstrap tamam."
+echo "🚀 Bacmaster HomeLab Installer"
 echo
-bash install.sh
+echo "1) Part1 - Proxmox + TrueNAS VM"
+echo "2) Part2 - TrueNAS API + Ubuntu ISO VM'ler"
+echo "3) Part3 - Docker Stack"
+echo
+read -rp "Seçim: " CHOICE
+
+case "$CHOICE" in
+  1)
+    bash scripts/01-bootstrap-truenas.sh
+    ;;
+  2)
+    bash scripts/02-full-auto-part2.sh
+    ;;
+  3)
+    bash scripts/03-full-docker-stack.sh
+    ;;
+  *)
+    echo "Geçersiz seçim."
+    exit 1
+    ;;
+esac
