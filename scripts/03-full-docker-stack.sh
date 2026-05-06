@@ -1,4 +1,3 @@
-cat > scripts/03-full-docker-stack.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -6,7 +5,10 @@ SECRETS_DIR="/root/.secrets"
 USERS_ENV="$SECRETS_DIR/users.env"
 CF_ENV="$SECRETS_DIR/cloudflare.env"
 
-[[ -f "$USERS_ENV" ]] || { echo "❌ users.env yok. Önce Part1 çalışmalı."; exit 1; }
+[[ -f "$USERS_ENV" ]] || {
+  echo "❌ users.env yok. Önce Part1 çalışmalı."
+  exit 1
+}
 
 source "$USERS_ENV"
 
@@ -21,9 +23,9 @@ MEDIA_IP="192.168.50.106"
 
 ask_secret() {
   local prompt="$1"
-  local var
-  read -rsp "$prompt: " var
-  echo
+  local var=""
+  read -r -s -p "$prompt: " var </dev/tty
+  echo "" >/dev/tty
   printf "%s" "$var"
 }
 
@@ -37,11 +39,11 @@ if [[ ! -f "$CF_ENV" ]]; then
   echo
   CF_TOKEN="$(ask_secret "Cloudflared token yapıştır")"
 
-cat > "$CF_ENV" <<EOL
+  cat > "$CF_ENV" <<EOF
 CLOUDFLARED_TOKEN="$CF_TOKEN"
-EOL
+EOF
 
-chmod 600 "$CF_ENV"
+  chmod 600 "$CF_ENV"
 fi
 
 source "$CF_ENV"
@@ -69,9 +71,7 @@ for IP in "$ARR_IP" "$NET_IP" "$NEXTCLOUD_IP" "$HA_IP" "$MEDIA_IP"; do
   wait_ssh "$IP"
 done
 
-# =========================
-# VM102 ARR
-# =========================
+# VM102 - ARR
 ssh_script "$ARR_IP" <<'EOS'
 set -e
 
@@ -182,9 +182,7 @@ cd /home/bacmaster/docker/arr
 docker compose up -d
 EOS
 
-# =========================
-# VM103 NETWORK
-# =========================
+# VM103 - NETWORK
 ssh_script "$NET_IP" <<EOS
 set -e
 
@@ -240,9 +238,7 @@ cd /home/bacmaster/docker/network
 docker compose up -d
 EOS
 
-# =========================
-# VM104 NEXTCLOUD
-# =========================
+# VM104 - NEXTCLOUD
 ssh_script "$NEXTCLOUD_IP" <<'EOS'
 set -e
 
@@ -294,9 +290,7 @@ cd /home/bacmaster/docker/nextcloud
 docker compose up -d
 EOS
 
-# =========================
-# VM105 HOME ASSISTANT
-# =========================
+# VM105 - HOME ASSISTANT
 ssh_script "$HA_IP" <<'EOS'
 set -e
 
@@ -322,9 +316,7 @@ cd /home/bacmaster/docker/homeassistant
 docker compose up -d
 EOS
 
-# =========================
-# VM106 MEDIA
-# =========================
+# VM106 - MEDIA
 ssh_script "$MEDIA_IP" <<'EOS'
 set -e
 
@@ -391,6 +383,3 @@ EOS
 echo
 echo "✅ PART3 Docker stack tamamlandı."
 echo
-EOF
-
-chmod +x scripts/03-full-docker-stack.sh
