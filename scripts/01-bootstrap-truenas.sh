@@ -62,19 +62,20 @@ echo
 # =========================
 if [[ ! -f "$USERS_ENV" ]]; then
   echo "🔐 Kullanıcı bilgileri oluşturuluyor..."
+  echo "⚠️ Şifreler bu kurulum sırasında ekranda görünecek."
   echo
 
-  MEDIA_USER="$(ask_text "Media user" "media")"
-  MEDIA_PASS="$(ask_secret "Media password")"
+  ask_text_into MEDIA_USER "Media user" "media"
+  ask_password_into MEDIA_PASS "Media password"
 
-  BACMASTER_USER="$(ask_text "Admin user" "bacmaster")"
-  BACMASTER_PASS="$(ask_secret "Admin password")"
+  ask_text_into BACMASTER_USER "Admin user" "bacmaster"
+  ask_password_into BACMASTER_PASS "Admin password"
 
-  TULUMBA_USER="$(ask_text "Secondary user" "tulumba")"
-  TULUMBA_PASS="$(ask_secret "Secondary password")"
+  ask_text_into TULUMBA_USER "Secondary user" "tulumba"
+  ask_password_into TULUMBA_PASS "Secondary password"
 
-  BACKUP_USER="$(ask_text "Backup user" "backup")"
-  BACKUP_PASS="$(ask_secret "Backup password")"
+  ask_text_into BACKUP_USER "Backup user" "backup"
+  ask_password_into BACKUP_PASS "Backup password"
 
   cat > "$USERS_ENV" <<EOF
 MEDIA_USER="$MEDIA_USER"
@@ -184,7 +185,7 @@ if ! step_done "popup"; then
 fi
 
 # =========================
-# LINUX USERS - FIXED
+# LINUX USERS
 # =========================
 if ! step_done "users"; then
   echo "👤 Linux kullanıcıları oluşturuluyor..."
