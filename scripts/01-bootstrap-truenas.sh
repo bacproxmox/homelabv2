@@ -18,9 +18,18 @@ mark_done() {
 
 ask_secret() {
   local prompt="$1"
-  local var
-  read -rsp "$prompt: " var
-  echo
+  local var=""
+  IFS= read -rs -p "$prompt: " var
+  echo ""
+  printf "%s" "$var"
+}
+
+ask_text() {
+  local prompt="$1"
+  local default="$2"
+  local var=""
+  read -rp "$prompt [$default]: " var
+  var="${var:-$default}"
   printf "%s" "$var"
 }
 
@@ -35,20 +44,16 @@ if [[ ! -f "$USERS_ENV" ]]; then
   echo "🔐 Kullanıcı bilgileri oluşturuluyor..."
   echo
 
-  read -rp "Media user [media]: " MEDIA_USER
-  MEDIA_USER="${MEDIA_USER:-media}"
+  MEDIA_USER="$(ask_text "Media user" "media")"
   MEDIA_PASS="$(ask_secret "Media password")"
 
-  read -rp "Admin user [bacmaster]: " BACMASTER_USER
-  BACMASTER_USER="${BACMASTER_USER:-bacmaster}"
+  BACMASTER_USER="$(ask_text "Admin user" "bacmaster")"
   BACMASTER_PASS="$(ask_secret "Admin password")"
 
-  read -rp "Secondary user [tulumba]: " TULUMBA_USER
-  TULUMBA_USER="${TULUMBA_USER:-tulumba}"
+  TULUMBA_USER="$(ask_text "Secondary user" "tulumba")"
   TULUMBA_PASS="$(ask_secret "Secondary password")"
 
-  read -rp "Backup user [backup]: " BACKUP_USER
-  BACKUP_USER="${BACKUP_USER:-backup}"
+  BACKUP_USER="$(ask_text "Backup user" "backup")"
   BACKUP_PASS="$(ask_secret "Backup password")"
 
   cat > "$USERS_ENV" <<EOF
@@ -232,8 +237,6 @@ if ! step_done "isos"; then
   cd /var/lib/vz/template/iso
 
   wget -nc https://download.sys.truenas.net/TrueNAS-SCALE-Goldeye/25.10.3/TrueNAS-SCALE-25.10.3.iso
-
-  # Ubuntu ISO şart değil ama local ISO arşivinde dursun diye indiriyoruz.
   wget -nc https://releases.ubuntu.com/26.04/ubuntu-26.04-live-server-amd64.iso || true
 
   mark_done "isos"
@@ -275,7 +278,6 @@ if ! step_done "iommu"; then
   fi
 fi
 
-# Reboot sonrası doğrulama
 if step_done "iommu_reboot_requested" && ! step_done "iommu_verified"; then
   echo "🔍 Reboot sonrası IOMMU doğrulanıyor..."
 
