@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export TERM=xterm
+
 REPO_URL="https://github.com/bacproxmox/homelabv2.git"
 TARGET_DIR="/root/homelab"
 
@@ -38,5 +40,4 @@ chmod +x scripts/*.sh
 
 echo "✅ Bootstrap tamam."
 echo
-echo "Installer başlatılıyor..."
 bash install.sh
