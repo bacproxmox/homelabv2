@@ -16,6 +16,11 @@ mark_done() {
   touch "$STATE_DIR/$1.done"
 }
 
+iommu_is_active() {
+  [[ -d /sys/kernel/iommu_groups ]] && \
+  [[ "$(find /sys/kernel/iommu_groups -type l | wc -l)" -gt 0 ]]
+}
+
 ask_text() {
   local prompt="$1"
   local default="$2"
@@ -232,12 +237,12 @@ if ! step_done "isos"; then
 fi
 
 # =========================
-# 8. IOMMU ENABLE
+# 8. IOMMU ENABLE / VERIFY
 # =========================
 if ! step_done "iommu"; then
   echo "🧠 IOMMU kontrol ediliyor..."
 
-  if grep -q "intel_iommu=on" /proc/cmdline; then
+  if iommu_is_active; then
     echo "✅ IOMMU zaten aktif"
     mark_done "iommu"
   else
@@ -269,13 +274,16 @@ fi
 if step_done "iommu_reboot_requested" && ! step_done "iommu_verified"; then
   echo "🔍 Reboot sonrası IOMMU doğrulanıyor..."
 
-  if grep -q "intel_iommu=on" /proc/cmdline; then
+  if iommu_is_active; then
     mark_done "iommu_verified"
     mark_done "iommu"
     echo "✅ IOMMU aktif görünüyor"
   else
     echo "❌ IOMMU aktif görünmüyor."
-    echo "BIOS içinde VT-d açık mı kontrol et."
+    echo "Ama BIOS'ta VT-d açıksa şu komutlarla manuel kontrol et:"
+    echo "cat /proc/cmdline"
+    echo "dmesg | grep -Ei 'DMAR|IOMMU|VT-d'"
+    echo "find /sys/kernel/iommu_groups/ -type l | head"
     exit 1
   fi
 fi
