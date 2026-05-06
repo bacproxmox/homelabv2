@@ -1,4 +1,3 @@
-cat > scripts/02-full-auto-part2.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -9,14 +8,19 @@ USERS_ENV="$SECRETS_DIR/users.env"
 
 mkdir -p "$STATE_DIR" "$SECRETS_DIR"
 
-done_step() { [[ -f "$STATE_DIR/$1.done" ]]; }
-mark_step() { touch "$STATE_DIR/$1.done"; }
+done_step() {
+  [[ -f "$STATE_DIR/$1.done" ]]
+}
+
+mark_step() {
+  touch "$STATE_DIR/$1.done"
+}
 
 ask_secret() {
   local prompt="$1"
-  local var
-  read -rsp "$prompt: " var
-  echo
+  local var=""
+  read -r -s -p "$prompt: " var </dev/tty
+  echo "" >/dev/tty
   printf "%s" "$var"
 }
 
@@ -36,7 +40,7 @@ if [[ ! -f "$PART2_ENV" ]]; then
   echo
   TRUENAS_KEY="$(ask_secret "TrueNAS API key yapıştır")"
 
-cat > "$PART2_ENV" <<EOL
+  cat > "$PART2_ENV" <<EOF
 TRUENAS_IP="192.168.50.101"
 TRUENAS_API_KEY="$TRUENAS_KEY"
 
@@ -48,9 +52,9 @@ CI_USER="$BACMASTER_USER"
 CI_PASS="$BACMASTER_PASS"
 GW="192.168.50.1"
 DNS="1.1.1.1"
-EOL
+EOF
 
-chmod 600 "$PART2_ENV"
+  chmod 600 "$PART2_ENV"
 fi
 
 source "$PART2_ENV"
@@ -77,18 +81,16 @@ tn_put() {
     "$TN_API/$1"
 }
 
-# =========================
-# TRUENAS API CHECK
-# =========================
 if ! done_step "truenas_api"; then
+  echo "🔍 TrueNAS API kontrol ediliyor..."
   tn_get "system/info" >/tmp/truenas-info.json
   mark_step "truenas_api"
+  echo "✅ TrueNAS API erişimi tamam"
 fi
 
-# =========================
-# TRUENAS DATASETS/NFS
-# =========================
 if ! done_step "truenas_datasets"; then
+  echo "🧊 TrueNAS dataset/NFS hazırlanıyor..."
+
   tn_post "user" "{
     \"username\": \"${MEDIA_USER}\",
     \"full_name\": \"Media User\",
@@ -125,21 +127,19 @@ if ! done_step "truenas_datasets"; then
   tn_post "service/start" "{\"service\": \"nfs\"}" >/dev/null || true
 
   mark_step "truenas_datasets"
+  echo "✅ TrueNAS dataset/NFS tamam"
 fi
 
-# =========================
-# UBUNTU IMAGE
-# =========================
 if ! done_step "ubuntu_image"; then
+  echo "📀 Ubuntu cloud image indiriliyor..."
   mkdir -p /var/lib/vz/template/iso
   wget -nc -O "$UBUNTU_IMAGE_FILE" "$UBUNTU_IMAGE_URL"
   mark_step "ubuntu_image"
 fi
 
-# =========================
-# TEMPLATE 9000
-# =========================
 if ! done_step "ubuntu_template"; then
+  echo "📦 Ubuntu template 9000 hazırlanıyor..."
+
   if ! qm status 9000 &>/dev/null; then
     qm create 9000 \
       --name ubuntu-template \
@@ -165,13 +165,12 @@ if ! done_step "ubuntu_template"; then
   mark_step "ubuntu_template"
 fi
 
-# =========================
-# SNIPPET
-# =========================
 if ! done_step "snippets"; then
+  echo "🧩 Cloud-init snippet hazırlanıyor..."
+
   mkdir -p /var/lib/vz/snippets
 
-cat > /var/lib/vz/snippets/bacmaster-docker.yaml <<EOL
+  cat > /var/lib/vz/snippets/bacmaster-docker.yaml <<EOF
 #cloud-config
 package_update: true
 package_upgrade: true
@@ -196,7 +195,7 @@ runcmd:
   - mount -a || true
   - mkdir -p /home/$CI_USER/docker
   - chown -R $CI_USER:$CI_USER /home/$CI_USER/docker
-EOL
+EOF
 
   mark_step "snippets"
 fi
@@ -214,6 +213,8 @@ create_vm() {
     return
   fi
 
+  echo "🖥️ VM $ID $NAME oluşturuluyor..."
+
   qm clone 9000 "$ID" --name "$NAME" --full true --storage "$VM_STORAGE"
   qm set "$ID" --memory "$RAM" --cores "$CORES" --cpu host
   qm resize "$ID" scsi0 "$DISK"
@@ -224,6 +225,8 @@ create_vm() {
 }
 
 if ! done_step "vms"; then
+  echo "🖥️ VM'ler oluşturuluyor..."
+
   create_vm 103 docker-network 192.168.50.103 4096 2 32G
   create_vm 102 docker-arr     192.168.50.102 8192 4 64G
   create_vm 104 nextcloud      192.168.50.104 8192 4 64G
@@ -236,6 +239,8 @@ if ! done_step "vms"; then
 fi
 
 if ! done_step "start_vms"; then
+  echo "▶️ VM'ler başlatılıyor..."
+
   for id in 102 103 104 105 106 107 110; do
     qm start "$id" || true
   done
@@ -243,7 +248,11 @@ if ! done_step "start_vms"; then
   mark_step "start_vms"
 fi
 
+echo
 echo "✅ PART2 tamamlandı."
-EOF
-
-chmod +x scripts/02-full-auto-part2.sh
+echo
+echo "Sonraki adım:"
+echo "cd /root/homelab"
+echo "bash install.sh"
+echo "seçim: 3"
+echo
