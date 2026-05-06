@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export TERM=xterm
+
 SECRETS_DIR="/root/.secrets"
 USERS_ENV="$SECRETS_DIR/users.env"
 CF_ENV="$SECRETS_DIR/cloudflare.env"
@@ -24,8 +26,22 @@ MEDIA_IP="192.168.50.106"
 ask_secret() {
   local prompt="$1"
   local var=""
-  read -r -s -p "$prompt: " var </dev/tty
-  echo "" >/dev/tty
+
+  while true; do
+    printf "%s: " "$prompt"
+
+    stty -echo || true
+    read -r var
+    stty echo || true
+    echo
+
+    if [[ -n "$var" ]]; then
+      break
+    fi
+
+    echo "Boş bırakılamaz."
+  done
+
   printf "%s" "$var"
 }
 
@@ -71,7 +87,39 @@ for IP in "$ARR_IP" "$NET_IP" "$NEXTCLOUD_IP" "$HA_IP" "$MEDIA_IP"; do
   wait_ssh "$IP"
 done
 
-# VM102 - ARR
+prepare_docker_vm() {
+  local IP="$1"
+
+  ssh_script "$IP" <<'EOS'
+set -e
+
+apt update
+apt install -y curl wget nano htop git ca-certificates nfs-common
+
+if ! command -v docker >/dev/null 2>&1; then
+  curl -fsSL https://get.docker.com | sh
+fi
+
+mkdir -p /mnt/media
+grep -q "192.168.50.101:/mnt/tank/media" /etc/fstab || \
+echo '192.168.50.101:/mnt/tank/media /mnt/media nfs defaults,_netdev,x-systemd.automount,noatime 0 0' >> /etc/fstab
+
+systemctl daemon-reload
+mount -a || true
+
+mkdir -p /home/bacmaster/docker
+chown -R bacmaster:bacmaster /home/bacmaster/docker
+
+usermod -aG docker bacmaster || true
+EOS
+}
+
+echo "🐳 Docker/NFS hazırlığı yapılıyor..."
+
+for IP in "$ARR_IP" "$NET_IP" "$NEXTCLOUD_IP" "$HA_IP" "$MEDIA_IP"; do
+  prepare_docker_vm "$IP"
+done
+
 ssh_script "$ARR_IP" <<'EOS'
 set -e
 
@@ -182,7 +230,6 @@ cd /home/bacmaster/docker/arr
 docker compose up -d
 EOS
 
-# VM103 - NETWORK
 ssh_script "$NET_IP" <<EOS
 set -e
 
@@ -238,7 +285,6 @@ cd /home/bacmaster/docker/network
 docker compose up -d
 EOS
 
-# VM104 - NEXTCLOUD
 ssh_script "$NEXTCLOUD_IP" <<'EOS'
 set -e
 
@@ -290,7 +336,6 @@ cd /home/bacmaster/docker/nextcloud
 docker compose up -d
 EOS
 
-# VM105 - HOME ASSISTANT
 ssh_script "$HA_IP" <<'EOS'
 set -e
 
@@ -316,7 +361,6 @@ cd /home/bacmaster/docker/homeassistant
 docker compose up -d
 EOS
 
-# VM106 - MEDIA
 ssh_script "$MEDIA_IP" <<'EOS'
 set -e
 
@@ -363,6 +407,7 @@ services:
 YAML
 
 cd /home/bacmaster/docker/media/immich
+
 if [ ! -f docker-compose.yml ]; then
   curl -L https://github.com/immich-app/immich/releases/latest/download/docker-compose.yml -o docker-compose.yml
   curl -L https://github.com/immich-app/immich/releases/latest/download/example.env -o .env
