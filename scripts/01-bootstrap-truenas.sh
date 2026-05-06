@@ -28,11 +28,10 @@ ask_text() {
   local default="$2"
   local var=""
 
-  printf "%s [%s]: " "$prompt" "$default"
-  read -r var
+  read -rp "$prompt [$default]: " var
   var="${var:-$default}"
 
-  printf "%s" "$var"
+  echo "$var"
 }
 
 ask_secret() {
@@ -40,11 +39,7 @@ ask_secret() {
   local var=""
 
   while true; do
-    printf "%s: " "$prompt"
-
-    stty -echo || true
-    read -r var
-    stty echo || true
+    read -rsp "$prompt: " var
     echo
 
     if [[ -n "$var" ]]; then
@@ -54,7 +49,7 @@ ask_secret() {
     echo "Boş bırakılamaz."
   done
 
-  printf "%s" "$var"
+  echo "$var"
 }
 
 echo
@@ -161,20 +156,7 @@ if ! step_done "packages"; then
 
   apt update
   apt install -y \
-    curl \
-    wget \
-    nano \
-    htop \
-    iftop \
-    iotop \
-    smartmontools \
-    pciutils \
-    lshw \
-    unzip \
-    git \
-    net-tools \
-    gdisk \
-    qemu-guest-agent
+    curl wget nano htop iftop iotop smartmontools pciutils lshw unzip git net-tools gdisk qemu-guest-agent
 
   mark_done "packages"
   echo "✅ Temel paketler hazır"
@@ -201,7 +183,7 @@ if ! step_done "popup"; then
 fi
 
 # =========================
-# LINUX USERS - FIXED GROUP LOGIC
+# LINUX USERS - FIXED
 # =========================
 if ! step_done "users"; then
   echo "👤 Linux kullanıcıları oluşturuluyor..."
@@ -219,31 +201,23 @@ if ! step_done "users"; then
 
     echo "➡️ Kullanıcı hazırlanıyor: $USER_NAME UID=$USER_ID GID=$GROUP_ID"
 
-    # UID başka kullanıcıda varsa dur
     if getent passwd "$USER_ID" >/dev/null; then
       EXISTING_USER="$(getent passwd "$USER_ID" | cut -d: -f1)"
       if [[ "$EXISTING_USER" != "$USER_NAME" ]]; then
         echo "❌ UID $USER_ID zaten başka kullanıcıda: $EXISTING_USER"
-        echo "Temiz kurulumda bu olmamalı. Kullanıcı/UID çakışması var."
         exit 1
       fi
     fi
 
-    # GID varsa onu kullan; yoksa kullanıcı adıyla grup oluştur
     if getent group "$GROUP_ID" >/dev/null; then
       EXISTING_GROUP="$(getent group "$GROUP_ID" | cut -d: -f1)"
       echo "⚠️ GID $GROUP_ID zaten var: $EXISTING_GROUP"
       PRIMARY_GROUP="$EXISTING_GROUP"
     else
-      if getent group "$USER_NAME" >/dev/null; then
-        PRIMARY_GROUP="$USER_NAME"
-      else
-        groupadd -g "$GROUP_ID" "$USER_NAME"
-        PRIMARY_GROUP="$USER_NAME"
-      fi
+      groupadd -g "$GROUP_ID" "$USER_NAME"
+      PRIMARY_GROUP="$USER_NAME"
     fi
 
-    # Kullanıcı yoksa oluştur
     if ! id "$USER_NAME" &>/dev/null; then
       useradd -m -u "$USER_ID" -g "$PRIMARY_GROUP" -s /bin/bash "$USER_NAME"
     else
