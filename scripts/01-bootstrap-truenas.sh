@@ -61,6 +61,9 @@ echo
 echo "🚀 PART1 - Proxmox + TrueNAS VM hazırlığı başlıyor / devam ediyor..."
 echo
 
+# =========================
+# USERS ENV WIZARD
+# =========================
 if [[ ! -f "$USERS_ENV" ]]; then
   echo "🔐 Kullanıcı bilgileri oluşturuluyor..."
   echo
@@ -122,6 +125,9 @@ done
 
 echo "✅ Kullanıcı bilgileri tamam"
 
+# =========================
+# REBOOT CONTINUE SERVICE
+# =========================
 if ! step_done "systemd"; then
   echo "🔁 Reboot sonrası devam servisi hazırlanıyor..."
 
@@ -147,6 +153,9 @@ EOF
   echo "✅ Reboot devam servisi hazır"
 fi
 
+# =========================
+# BASIC PACKAGES
+# =========================
 if ! step_done "packages"; then
   echo "📦 Temel paketler kuruluyor..."
 
@@ -171,6 +180,9 @@ if ! step_done "packages"; then
   echo "✅ Temel paketler hazır"
 fi
 
+# =========================
+# NO SUBSCRIPTION POPUP FIX
+# =========================
 if ! step_done "popup"; then
   echo "🔕 No-subscription popup kapatılıyor..."
 
@@ -188,6 +200,9 @@ if ! step_done "popup"; then
   echo "✅ Popup fix tamam"
 fi
 
+# =========================
+# LINUX USERS - FIXED GROUP LOGIC
+# =========================
 if ! step_done "users"; then
   echo "👤 Linux kullanıcıları oluşturuluyor..."
 
@@ -202,10 +217,37 @@ if ! step_done "users"; then
     USER_ID="${!UID_VAR}"
     GROUP_ID="${!GID_VAR}"
 
-    groupadd -g "$GROUP_ID" "$USER_NAME" 2>/dev/null || true
+    echo "➡️ Kullanıcı hazırlanıyor: $USER_NAME UID=$USER_ID GID=$GROUP_ID"
 
+    # UID başka kullanıcıda varsa dur
+    if getent passwd "$USER_ID" >/dev/null; then
+      EXISTING_USER="$(getent passwd "$USER_ID" | cut -d: -f1)"
+      if [[ "$EXISTING_USER" != "$USER_NAME" ]]; then
+        echo "❌ UID $USER_ID zaten başka kullanıcıda: $EXISTING_USER"
+        echo "Temiz kurulumda bu olmamalı. Kullanıcı/UID çakışması var."
+        exit 1
+      fi
+    fi
+
+    # GID varsa onu kullan; yoksa kullanıcı adıyla grup oluştur
+    if getent group "$GROUP_ID" >/dev/null; then
+      EXISTING_GROUP="$(getent group "$GROUP_ID" | cut -d: -f1)"
+      echo "⚠️ GID $GROUP_ID zaten var: $EXISTING_GROUP"
+      PRIMARY_GROUP="$EXISTING_GROUP"
+    else
+      if getent group "$USER_NAME" >/dev/null; then
+        PRIMARY_GROUP="$USER_NAME"
+      else
+        groupadd -g "$GROUP_ID" "$USER_NAME"
+        PRIMARY_GROUP="$USER_NAME"
+      fi
+    fi
+
+    # Kullanıcı yoksa oluştur
     if ! id "$USER_NAME" &>/dev/null; then
-      useradd -m -u "$USER_ID" -g "$GROUP_ID" -s /bin/bash "$USER_NAME"
+      useradd -m -u "$USER_ID" -g "$PRIMARY_GROUP" -s /bin/bash "$USER_NAME"
+    else
+      echo "✅ Kullanıcı zaten var: $USER_NAME"
     fi
 
     echo "$USER_NAME:$USER_PASS" | chpasswd
@@ -221,6 +263,9 @@ if ! step_done "users"; then
   echo "✅ Linux kullanıcıları hazır"
 fi
 
+# =========================
+# ISO DOWNLOAD
+# =========================
 if ! step_done "isos"; then
   echo "📀 ISO dosyaları indiriliyor..."
 
@@ -234,6 +279,9 @@ if ! step_done "isos"; then
   echo "✅ ISO dosyaları hazır"
 fi
 
+# =========================
+# IOMMU ENABLE / VERIFY
+# =========================
 if ! step_done "iommu"; then
   echo "🧠 IOMMU kontrol ediliyor..."
 
@@ -283,6 +331,9 @@ if step_done "iommu_reboot_requested" && ! step_done "iommu_verified"; then
   fi
 fi
 
+# =========================
+# NVME STORAGE: nvme-vm
+# =========================
 if ! step_done "nvme"; then
   echo "💾 NVMe storage hazırlanıyor..."
 
@@ -319,6 +370,9 @@ if ! step_done "nvme"; then
   echo "✅ NVMe storage hazır"
 fi
 
+# =========================
+# TRUENAS VM 101
+# =========================
 if ! step_done "truenas_vm"; then
   echo "🧊 TrueNAS VM 101 oluşturuluyor..."
 
