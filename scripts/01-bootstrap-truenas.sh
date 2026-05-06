@@ -16,20 +16,20 @@ mark_done() {
   touch "$STATE_DIR/$1.done"
 }
 
-ask_secret() {
-  local prompt="$1"
-  local var=""
-  IFS= read -rs -p "$prompt: " var
-  echo ""
-  printf "%s" "$var"
-}
-
 ask_text() {
   local prompt="$1"
   local default="$2"
   local var=""
-  read -rp "$prompt [$default]: " var
+  read -r -p "$prompt [$default]: " var </dev/tty
   var="${var:-$default}"
+  printf "%s" "$var"
+}
+
+ask_secret() {
+  local prompt="$1"
+  local var=""
+  read -r -s -p "$prompt: " var </dev/tty
+  echo "" >/dev/tty
   printf "%s" "$var"
 }
 
@@ -57,33 +57,21 @@ if [[ ! -f "$USERS_ENV" ]]; then
   BACKUP_PASS="$(ask_secret "Backup password")"
 
   cat > "$USERS_ENV" <<EOF
-# =========================
-# 🎬 PRIMARY MEDIA USER
-# =========================
 MEDIA_USER="$MEDIA_USER"
 MEDIA_PASS="$MEDIA_PASS"
 MEDIA_UID=1000
 MEDIA_GID=1000
 
-# =========================
-# 🧑‍💻 ADMIN USER
-# =========================
 BACMASTER_USER="$BACMASTER_USER"
 BACMASTER_PASS="$BACMASTER_PASS"
 BACMASTER_UID=1100
 BACMASTER_GID=1100
 
-# =========================
-# 🔧 SECONDARY USER
-# =========================
 TULUMBA_USER="$TULUMBA_USER"
 TULUMBA_PASS="$TULUMBA_PASS"
 TULUMBA_UID=1200
 TULUMBA_GID=1200
 
-# =========================
-# 💾 BACKUP USER
-# =========================
 BACKUP_USER="$BACKUP_USER"
 BACKUP_PASS="$BACKUP_PASS"
 BACKUP_UID=1300
@@ -130,7 +118,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/root/homelab/scripts/01-part1-proxmox-truenas.sh
+ExecStart=/root/homelab/scripts/01-bootstrap-truenas.sh
 RemainAfterExit=no
 
 [Install]
@@ -386,9 +374,6 @@ if ! step_done "truenas_vm"; then
   qm config "$VMID"
 fi
 
-# =========================
-# 11. CLEANUP SERVICE
-# =========================
 systemctl disable bootstrap-truenas.service >/dev/null 2>&1 || true
 
 echo
