@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export TERM=xterm
+
 STATE_DIR="/root/.bootstrap-state"
 SECRETS_DIR="/root/.secrets"
 USERS_ENV="$SECRETS_DIR/users.env"
@@ -25,16 +27,33 @@ ask_text() {
   local prompt="$1"
   local default="$2"
   local var=""
-  read -r -p "$prompt [$default]: " var </dev/tty
+
+  printf "%s [%s]: " "$prompt" "$default"
+  read -r var
   var="${var:-$default}"
+
   printf "%s" "$var"
 }
 
 ask_secret() {
   local prompt="$1"
   local var=""
-  read -r -s -p "$prompt: " var </dev/tty
-  echo "" >/dev/tty
+
+  while true; do
+    printf "%s: " "$prompt"
+
+    stty -echo || true
+    read -r var
+    stty echo || true
+    echo
+
+    if [[ -n "$var" ]]; then
+      break
+    fi
+
+    echo "Boş bırakılamaz."
+  done
+
   printf "%s" "$var"
 }
 
@@ -42,9 +61,6 @@ echo
 echo "🚀 PART1 - Proxmox + TrueNAS VM hazırlığı başlıyor / devam ediyor..."
 echo
 
-# =========================
-# 1. USERS ENV WIZARD
-# =========================
 if [[ ! -f "$USERS_ENV" ]]; then
   echo "🔐 Kullanıcı bilgileri oluşturuluyor..."
   echo
@@ -89,9 +105,6 @@ fi
 
 source "$USERS_ENV"
 
-# =========================
-# 2. VALIDATION
-# =========================
 echo "🔎 Kullanıcı bilgileri kontrol ediliyor..."
 
 for var in \
@@ -109,9 +122,6 @@ done
 
 echo "✅ Kullanıcı bilgileri tamam"
 
-# =========================
-# 3. REBOOT CONTINUE SERVICE
-# =========================
 if ! step_done "systemd"; then
   echo "🔁 Reboot sonrası devam servisi hazırlanıyor..."
 
@@ -137,9 +147,6 @@ EOF
   echo "✅ Reboot devam servisi hazır"
 fi
 
-# =========================
-# 4. BASIC PACKAGES
-# =========================
 if ! step_done "packages"; then
   echo "📦 Temel paketler kuruluyor..."
 
@@ -164,9 +171,6 @@ if ! step_done "packages"; then
   echo "✅ Temel paketler hazır"
 fi
 
-# =========================
-# 5. NO SUBSCRIPTION POPUP FIX
-# =========================
 if ! step_done "popup"; then
   echo "🔕 No-subscription popup kapatılıyor..."
 
@@ -184,9 +188,6 @@ if ! step_done "popup"; then
   echo "✅ Popup fix tamam"
 fi
 
-# =========================
-# 6. LINUX USERS
-# =========================
 if ! step_done "users"; then
   echo "👤 Linux kullanıcıları oluşturuluyor..."
 
@@ -220,9 +221,6 @@ if ! step_done "users"; then
   echo "✅ Linux kullanıcıları hazır"
 fi
 
-# =========================
-# 7. ISO DOWNLOAD
-# =========================
 if ! step_done "isos"; then
   echo "📀 ISO dosyaları indiriliyor..."
 
@@ -236,9 +234,6 @@ if ! step_done "isos"; then
   echo "✅ ISO dosyaları hazır"
 fi
 
-# =========================
-# 8. IOMMU ENABLE / VERIFY
-# =========================
 if ! step_done "iommu"; then
   echo "🧠 IOMMU kontrol ediliyor..."
 
@@ -280,7 +275,7 @@ if step_done "iommu_reboot_requested" && ! step_done "iommu_verified"; then
     echo "✅ IOMMU aktif görünüyor"
   else
     echo "❌ IOMMU aktif görünmüyor."
-    echo "Ama BIOS'ta VT-d açıksa şu komutlarla manuel kontrol et:"
+    echo "Manuel kontrol:"
     echo "cat /proc/cmdline"
     echo "dmesg | grep -Ei 'DMAR|IOMMU|VT-d'"
     echo "find /sys/kernel/iommu_groups/ -type l | head"
@@ -288,9 +283,6 @@ if step_done "iommu_reboot_requested" && ! step_done "iommu_verified"; then
   fi
 fi
 
-# =========================
-# 9. NVME STORAGE: nvme-vm
-# =========================
 if ! step_done "nvme"; then
   echo "💾 NVMe storage hazırlanıyor..."
 
@@ -327,9 +319,6 @@ if ! step_done "nvme"; then
   echo "✅ NVMe storage hazır"
 fi
 
-# =========================
-# 10. TRUENAS VM 101
-# =========================
 if ! step_done "truenas_vm"; then
   echo "🧊 TrueNAS VM 101 oluşturuluyor..."
 
@@ -387,30 +376,21 @@ systemctl disable bootstrap-truenas.service >/dev/null 2>&1 || true
 echo
 echo "🎯 PART1 CHECKPOINT TAMAMLANDI"
 echo
-echo "Şimdi manuel adım:"
-echo
-echo "1. TrueNAS VM'i başlat:"
-echo "   qm start 101"
-echo
-echo "2. Proxmox GUI > VM 101 > Console aç"
-echo
-echo "3. TrueNAS installer içinde OS diski olarak SADECE 64GB scsi0 diski seç"
-echo "   20TB ve 4TB diskleri kurulum diski olarak SEÇME"
-echo
-echo "4. TrueNAS kurulumu bitince ISO'yu çıkar:"
+echo "Manuel adımlar:"
+echo "1. qm start 101"
+echo "2. Proxmox GUI > VM 101 > Console"
+echo "3. TrueNAS installer içinde SADECE 64GB scsi0 OS diskini seç"
+echo "4. Kurulum bitince:"
 echo "   qm stop 101"
 echo "   qm set 101 --ide2 none"
 echo "   qm set 101 --boot order=scsi0"
 echo "   qm start 101"
-echo
-echo "5. TrueNAS içinde manuel:"
-echo "   - IP sabitle: 192.168.50.101"
-echo "   - pool oluştur: tank"
-echo "   - pool oluştur: private"
+echo "5. TrueNAS içinde:"
+echo "   - IP: 192.168.50.101"
+echo "   - pool: tank"
+echo "   - pool: private"
 echo "   - API key oluştur"
-echo
-echo "6. Sonra Part2 çalıştır:"
-echo "   cd /root/homelab"
-echo "   bash install.sh"
+echo "6. Sonra Part2:"
+echo "   cd /root/homelab && bash install.sh"
 echo "   seçim: 2"
 echo
