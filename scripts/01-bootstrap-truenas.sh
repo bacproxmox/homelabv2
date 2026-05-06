@@ -23,33 +23,34 @@ iommu_is_active() {
   [[ "$(find /sys/kernel/iommu_groups -type l | wc -l)" -gt 0 ]]
 }
 
-ask_text() {
-  local prompt="$1"
-  local default="$2"
-  local var=""
+ask_text_into() {
+  local __var="$1"
+  local prompt="$2"
+  local default="$3"
+  local input=""
 
-  read -rp "$prompt [$default]: " var
-  var="${var:-$default}"
+  read -r -p "$prompt [$default]: " input
+  input="${input:-$default}"
 
-  echo "$var"
+  printf -v "$__var" "%s" "$input"
 }
 
-ask_secret() {
-  local prompt="$1"
-  local var=""
+ask_password_into() {
+  local __var="$1"
+  local prompt="$2"
+  local input=""
 
   while true; do
-    read -rsp "$prompt: " var
-    echo
+    read -r -p "$prompt: " input
 
-    if [[ -n "$var" ]]; then
+    if [[ -n "$input" ]]; then
       break
     fi
 
     echo "Boş bırakılamaz."
   done
 
-  echo "$var"
+  printf -v "$__var" "%s" "$input"
 }
 
 echo
