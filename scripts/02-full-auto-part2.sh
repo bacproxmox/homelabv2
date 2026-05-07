@@ -178,7 +178,8 @@ create_iso_vm() {
     --vga virtio
 
   qm set "$ID" --efidisk0 "$VM_STORAGE":1,format=raw,efitype=4m
-  qm set "$ID" --scsi0 "$VM_STORAGE":"$DISK",discard=on,ssd=1,iothread=1
+  DISK_SIZE="${DISK%G}"
+  qm set "$ID" --scsi0 "${VM_STORAGE}:${DISK_SIZE}",discard=on,ssd=1,iothread=1
   qm set "$ID" --ide2 "$UBUNTU_ISO",media=cdrom
   qm set "$ID" --boot order=ide2
 }
