@@ -261,8 +261,6 @@ services:
       - ./adguard/work:/opt/adguardhome/work
       - ./adguard/conf:/opt/adguardhome/conf
     ports:
-      - "53:53/tcp"
-      - "53:53/udp"
       - "3000:3000"
       - "8081:80"
     restart: unless-stopped
