@@ -23,26 +23,18 @@ NEXTCLOUD_IP="192.168.50.104"
 HA_IP="192.168.50.105"
 MEDIA_IP="192.168.50.106"
 
-ask_secret() {
-  local prompt="$1"
-  local var=""
+ask_visible_into() {
+  local __var="$1"
+  local prompt="$2"
+  local input=""
 
   while true; do
-    printf "%s: " "$prompt"
-
-    stty -echo || true
-    read -r var
-    stty echo || true
-    echo
-
-    if [[ -n "$var" ]]; then
-      break
-    fi
-
+    read -r -p "$prompt: " input
+    [[ -n "$input" ]] && break
     echo "Boş bırakılamaz."
   done
 
-  printf "%s" "$var"
+  printf -v "$__var" "%s" "$input"
 }
 
 if [[ ! -f "$CF_ENV" ]]; then
@@ -53,7 +45,8 @@ if [[ ! -f "$CF_ENV" ]]; then
   echo "Connector type: Docker"
   echo "Token'ı kopyala."
   echo
-  CF_TOKEN="$(ask_secret "Cloudflared token yapıştır")"
+  echo "⚠️ Cloudflare token bu kurulum sırasında ekranda görünecek."
+  ask_visible_into CF_TOKEN "Cloudflared token yapıştır"
 
   cat > "$CF_ENV" <<EOF
 CLOUDFLARED_TOKEN="$CF_TOKEN"
