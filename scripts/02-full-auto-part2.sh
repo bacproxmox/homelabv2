@@ -10,34 +10,21 @@ USERS_ENV="$SECRETS_DIR/users.env"
 
 mkdir -p "$STATE_DIR" "$SECRETS_DIR"
 
-done_step() {
-  [[ -f "$STATE_DIR/$1.done" ]]
-}
+done_step() { [[ -f "$STATE_DIR/$1.done" ]]; }
+mark_step() { touch "$STATE_DIR/$1.done"; }
 
-mark_step() {
-  touch "$STATE_DIR/$1.done"
-}
-
-ask_secret() {
-  local prompt="$1"
-  local var=""
+ask_visible_into() {
+  local __var="$1"
+  local prompt="$2"
+  local input=""
 
   while true; do
-    printf "%s: " "$prompt"
-
-    stty -echo || true
-    read -r var
-    stty echo || true
-    echo
-
-    if [[ -n "$var" ]]; then
-      break
-    fi
-
+    read -r -p "$prompt: " input
+    [[ -n "$input" ]] && break
     echo "Boş bırakılamaz."
   done
 
-  printf "%s" "$var"
+  printf -v "$__var" "%s" "$input"
 }
 
 echo "🚀 Part2 ISO Mode: TrueNAS API + Ubuntu ISO VM oluşturma"
@@ -54,7 +41,8 @@ if [[ ! -f "$PART2_ENV" ]]; then
   echo "TrueNAS API key oluşturmak için TrueNAS Shell:"
   echo "midclt call api_key.create '{\"name\":\"bacmaster-installer\",\"username\":\"truenas_admin\"}'"
   echo
-  TRUENAS_KEY="$(ask_secret "TrueNAS API key yapıştır")"
+  echo "⚠️ API key bu kurulum sırasında ekranda görünecek."
+  ask_visible_into TRUENAS_KEY "TrueNAS API key yapıştır"
 
   cat > "$PART2_ENV" <<EOF
 TRUENAS_IP="192.168.50.101"
@@ -96,7 +84,25 @@ tn_put() {
 
 if ! done_step "truenas_api"; then
   echo "🔍 TrueNAS API kontrol ediliyor..."
-  tn_get "system/info" >/tmp/truenas-info.json
+
+  if ! tn_get "system/info" >/tmp/truenas-info.json; then
+    echo "❌ TrueNAS API erişimi başarısız."
+    echo "Kontrol et:"
+    echo "- TrueNAS IP: ${TRUENAS_IP}"
+    echo "- API key doğru mu?"
+    echo "- TrueNAS açık mı?"
+    exit 1
+  fi
+
+  if grep -qi "authentication" /tmp/truenas-info.json || grep -qi "unauthorized" /tmp/truenas-info.json; then
+    echo "❌ TrueNAS API key hatalı görünüyor."
+    echo "Düzeltmek için:"
+    echo "rm -f $PART2_ENV"
+    echo "bash install.sh"
+    echo "seçim: 2"
+    exit 1
+  fi
+
   mark_step "truenas_api"
   echo "✅ TrueNAS API erişimi tamam"
 fi
