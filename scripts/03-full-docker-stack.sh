@@ -64,17 +64,25 @@ wait_ssh() {
   local IP="$1"
   echo "⏳ SSH bekleniyor: $IP"
 
-  until sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "$SSH_USER@$IP" "echo ok" >/dev/null 2>&1; do
+  until sshpass -p "$SSH_PASS" ssh \
+    -o StrictHostKeyChecking=no \
+    -o ConnectTimeout=5 \
+    "$SSH_USER@$IP" "echo ok" >/dev/null 2>&1; do
     sleep 5
   done
 
   echo "✅ SSH hazır: $IP"
 }
 
-ssh_script() {
+ssh_root_script() {
   local IP="$1"
-  sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$IP" "sudo bash -s"
+
+  sshpass -p "$SSH_PASS" ssh \
+    -o StrictHostKeyChecking=no \
+    "$SSH_USER@$IP" "su - root -c 'bash -s'" 
 }
+
+echo "🔎 SSH erişimleri kontrol ediliyor..."
 
 for IP in "$ARR_IP" "$NET_IP" "$NEXTCLOUD_IP" "$HA_IP" "$MEDIA_IP"; do
   wait_ssh "$IP"
@@ -83,7 +91,11 @@ done
 prepare_docker_vm() {
   local IP="$1"
 
-  ssh_script "$IP" <<'EOS'
+  echo "🐳 Docker/NFS hazırlığı: $IP"
+
+  sshpass -p "$SSH_PASS" ssh \
+    -o StrictHostKeyChecking=no \
+    "$SSH_USER@$IP" "echo '$SSH_PASS' | su - root -c 'bash -s'" <<'EOS'
 set -e
 
 apt update
@@ -94,6 +106,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 mkdir -p /mnt/media
+
 grep -q "192.168.50.101:/mnt/tank/media" /etc/fstab || \
 echo '192.168.50.101:/mnt/tank/media /mnt/media nfs defaults,_netdev,x-systemd.automount,noatime 0 0' >> /etc/fstab
 
@@ -113,7 +126,11 @@ for IP in "$ARR_IP" "$NET_IP" "$NEXTCLOUD_IP" "$HA_IP" "$MEDIA_IP"; do
   prepare_docker_vm "$IP"
 done
 
-ssh_script "$ARR_IP" <<'EOS'
+echo "🎬 VM102 docker-arr stack kuruluyor..."
+
+sshpass -p "$SSH_PASS" ssh \
+  -o StrictHostKeyChecking=no \
+  "$SSH_USER@$ARR_IP" "echo '$SSH_PASS' | su - root -c 'bash -s'" <<'EOS'
 set -e
 
 mkdir -p /home/bacmaster/docker/arr/{qbittorrent,prowlarr,sonarr,radarr,bazarr,jellyseerr,recyclarr}
@@ -219,11 +236,16 @@ services:
 YAML
 
 chown -R bacmaster:bacmaster /home/bacmaster/docker/arr
+
 cd /home/bacmaster/docker/arr
 docker compose up -d
 EOS
 
-ssh_script "$NET_IP" <<EOS
+echo "🌐 VM103 docker-network stack kuruluyor..."
+
+sshpass -p "$SSH_PASS" ssh \
+  -o StrictHostKeyChecking=no \
+  "$SSH_USER@$NET_IP" "echo '$SSH_PASS' | su - root -c 'bash -s'" <<EOS
 set -e
 
 mkdir -p /home/bacmaster/docker/network/{adguard,uptime-kuma,flaresolverr,cloudflared}
@@ -274,11 +296,16 @@ services:
 YAML
 
 chown -R bacmaster:bacmaster /home/bacmaster/docker/network
+
 cd /home/bacmaster/docker/network
 docker compose up -d
 EOS
 
-ssh_script "$NEXTCLOUD_IP" <<'EOS'
+echo "☁️ VM104 nextcloud stack kuruluyor..."
+
+sshpass -p "$SSH_PASS" ssh \
+  -o StrictHostKeyChecking=no \
+  "$SSH_USER@$NEXTCLOUD_IP" "echo '$SSH_PASS' | su - root -c 'bash -s'" <<'EOS'
 set -e
 
 mkdir -p /home/bacmaster/docker/nextcloud/{nextcloud,db,redis}
@@ -325,11 +352,16 @@ services:
 YAML
 
 chown -R bacmaster:bacmaster /home/bacmaster/docker/nextcloud
+
 cd /home/bacmaster/docker/nextcloud
 docker compose up -d
 EOS
 
-ssh_script "$HA_IP" <<'EOS'
+echo "🏠 VM105 Home Assistant stack kuruluyor..."
+
+sshpass -p "$SSH_PASS" ssh \
+  -o StrictHostKeyChecking=no \
+  "$SSH_USER@$HA_IP" "echo '$SSH_PASS' | su - root -c 'bash -s'" <<'EOS'
 set -e
 
 mkdir -p /home/bacmaster/docker/homeassistant/config
@@ -350,11 +382,16 @@ services:
 YAML
 
 chown -R bacmaster:bacmaster /home/bacmaster/docker/homeassistant
+
 cd /home/bacmaster/docker/homeassistant
 docker compose up -d
 EOS
 
-ssh_script "$MEDIA_IP" <<'EOS'
+echo "🎞️ VM106 media stack kuruluyor..."
+
+sshpass -p "$SSH_PASS" ssh \
+  -o StrictHostKeyChecking=no \
+  "$SSH_USER@$MEDIA_IP" "echo '$SSH_PASS' | su - root -c 'bash -s'" <<'EOS'
 set -e
 
 mkdir -p /home/bacmaster/docker/media/{jellyfin,ollama,open-webui,immich}
@@ -420,4 +457,21 @@ EOS
 
 echo
 echo "✅ PART3 Docker stack tamamlandı."
+echo
+echo "Kontrol adresleri:"
+echo "qBittorrent  : http://192.168.50.102:8080"
+echo "Prowlarr     : http://192.168.50.102:9696"
+echo "Sonarr       : http://192.168.50.102:8989"
+echo "Radarr       : http://192.168.50.102:7878"
+echo "Bazarr       : http://192.168.50.102:6767"
+echo "Jellyseerr   : http://192.168.50.102:5055"
+echo "AdGuard      : http://192.168.50.103:3000"
+echo "Uptime Kuma  : http://192.168.50.103:3001"
+echo "Flaresolverr : http://192.168.50.103:8191"
+echo "Nextcloud    : http://192.168.50.104:8080"
+echo "HomeAssistant: http://192.168.50.105:8123"
+echo "Jellyfin     : http://192.168.50.106:8096"
+echo "Ollama       : http://192.168.50.106:11434"
+echo "Open WebUI   : http://192.168.50.106:3000"
+echo "Immich       : http://192.168.50.106:2283"
 echo
