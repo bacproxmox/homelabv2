@@ -62,6 +62,7 @@ apt install -y sshpass
 
 wait_ssh() {
   local IP="$1"
+
   echo "⏳ SSH bekleniyor: $IP"
 
   until sshpass -p "$SSH_PASS" ssh \
@@ -74,32 +75,46 @@ wait_ssh() {
   echo "✅ SSH hazır: $IP"
 }
 
-ssh_root_script() {
+run_remote() {
   local IP="$1"
 
   sshpass -p "$SSH_PASS" ssh \
+    -tt \
     -o StrictHostKeyChecking=no \
-    "$SSH_USER@$IP" "su - root -c 'bash -s'" 
+    "$SSH_USER@$IP" \
+    "echo '$SSH_PASS' | sudo -S bash -s"
 }
 
 echo "🔎 SSH erişimleri kontrol ediliyor..."
 
-for IP in "$ARR_IP" "$NET_IP" "$NEXTCLOUD_IP" "$HA_IP" "$MEDIA_IP"; do
+for IP in \
+  "$ARR_IP" \
+  "$NET_IP" \
+  "$NEXTCLOUD_IP" \
+  "$HA_IP" \
+  "$MEDIA_IP"
+do
   wait_ssh "$IP"
 done
 
-prepare_docker_vm() {
+prepare_vm() {
   local IP="$1"
 
   echo "🐳 Docker/NFS hazırlığı: $IP"
 
-  sshpass -p "$SSH_PASS" ssh \
-    -o StrictHostKeyChecking=no \
-    "$SSH_USER@$IP" "echo '$SSH_PASS' | su - root -c 'bash -s'" <<'EOS'
+  run_remote "$IP" <<'EOS'
 set -e
 
 apt update
-apt install -y curl wget nano htop git ca-certificates nfs-common
+
+apt install -y \
+  curl \
+  wget \
+  nano \
+  htop \
+  git \
+  ca-certificates \
+  nfs-common
 
 if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | sh
@@ -122,22 +137,32 @@ EOS
 
 echo "🐳 Docker/NFS hazırlığı yapılıyor..."
 
-for IP in "$ARR_IP" "$NET_IP" "$NEXTCLOUD_IP" "$HA_IP" "$MEDIA_IP"; do
-  prepare_docker_vm "$IP"
+for IP in \
+  "$ARR_IP" \
+  "$NET_IP" \
+  "$NEXTCLOUD_IP" \
+  "$HA_IP" \
+  "$MEDIA_IP"
+do
+  prepare_vm "$IP"
 done
 
 echo "🎬 VM102 docker-arr stack kuruluyor..."
 
-sshpass -p "$SSH_PASS" ssh \
-  -o StrictHostKeyChecking=no \
-  "$SSH_USER@$ARR_IP" "echo '$SSH_PASS' | su - root -c 'bash -s'" <<'EOS'
+run_remote "$ARR_IP" <<'EOS'
 set -e
 
 mkdir -p /home/bacmaster/docker/arr/{qbittorrent,prowlarr,sonarr,radarr,bazarr,jellyseerr,recyclarr}
-mkdir -p /mnt/media/downloads /mnt/media/movies /mnt/media/series /mnt/media/music
+
+mkdir -p \
+  /mnt/media/downloads \
+  /mnt/media/movies \
+  /mnt/media/series \
+  /mnt/media/music
 
 cat > /home/bacmaster/docker/arr/docker-compose.yml <<'YAML'
 services:
+
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:latest
     container_name: qbittorrent
@@ -150,9 +175,9 @@ services:
       - ./qbittorrent:/config
       - /mnt/media/downloads:/downloads
     ports:
-      - 8080:8080
-      - 6881:6881
-      - 6881:6881/udp
+      - "8080:8080"
+      - "6881:6881"
+      - "6881:6881/udp"
     restart: unless-stopped
 
   prowlarr:
@@ -165,7 +190,7 @@ services:
     volumes:
       - ./prowlarr:/config
     ports:
-      - 9696:9696
+      - "9696:9696"
     restart: unless-stopped
 
   sonarr:
@@ -180,7 +205,7 @@ services:
       - /mnt/media/series:/series
       - /mnt/media/downloads:/downloads
     ports:
-      - 8989:8989
+      - "8989:8989"
     restart: unless-stopped
 
   radarr:
@@ -195,7 +220,7 @@ services:
       - /mnt/media/movies:/movies
       - /mnt/media/downloads:/downloads
     ports:
-      - 7878:7878
+      - "7878:7878"
     restart: unless-stopped
 
   bazarr:
@@ -210,19 +235,18 @@ services:
       - /mnt/media/movies:/movies
       - /mnt/media/series:/series
     ports:
-      - 6767:6767
+      - "6767:6767"
     restart: unless-stopped
 
   jellyseerr:
     image: fallenbagel/jellyseerr:latest
     container_name: jellyseerr
     environment:
-      - LOG_LEVEL=info
       - TZ=Europe/Istanbul
     volumes:
       - ./jellyseerr:/app/config
     ports:
-      - 5055:5055
+      - "5055:5055"
     restart: unless-stopped
 
   recyclarr:
@@ -243,9 +267,7 @@ EOS
 
 echo "🌐 VM103 docker-network stack kuruluyor..."
 
-sshpass -p "$SSH_PASS" ssh \
-  -o StrictHostKeyChecking=no \
-  "$SSH_USER@$NET_IP" "echo '$SSH_PASS' | su - root -c 'bash -s'" <<EOS
+run_remote "$NET_IP" <<EOS
 set -e
 
 mkdir -p /home/bacmaster/docker/network/{adguard,uptime-kuma,flaresolverr,cloudflared}
@@ -256,6 +278,7 @@ ENV
 
 cat > /home/bacmaster/docker/network/docker-compose.yml <<'YAML'
 services:
+
   adguard:
     image: adguard/adguardhome:latest
     container_name: adguard
@@ -263,10 +286,10 @@ services:
       - ./adguard/work:/opt/adguardhome/work
       - ./adguard/conf:/opt/adguardhome/conf
     ports:
-      - 53:53/tcp
-      - 53:53/udp
-      - 3000:3000/tcp
-      - 8081:80/tcp
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "3000:3000"
+      - "8081:80"
     restart: unless-stopped
 
   uptime-kuma:
@@ -275,7 +298,7 @@ services:
     volumes:
       - ./uptime-kuma:/app/data
     ports:
-      - 3001:3001
+      - "3001:3001"
     restart: unless-stopped
 
   flaresolverr:
@@ -285,7 +308,7 @@ services:
       - LOG_LEVEL=info
       - TZ=Europe/Istanbul
     ports:
-      - 8191:8191
+      - "8191:8191"
     restart: unless-stopped
 
   cloudflared:
@@ -303,15 +326,14 @@ EOS
 
 echo "☁️ VM104 nextcloud stack kuruluyor..."
 
-sshpass -p "$SSH_PASS" ssh \
-  -o StrictHostKeyChecking=no \
-  "$SSH_USER@$NEXTCLOUD_IP" "echo '$SSH_PASS' | su - root -c 'bash -s'" <<'EOS'
+run_remote "$NEXTCLOUD_IP" <<'EOS'
 set -e
 
 mkdir -p /home/bacmaster/docker/nextcloud/{nextcloud,db,redis}
 
 cat > /home/bacmaster/docker/nextcloud/docker-compose.yml <<'YAML'
 services:
+
   nextcloud-db:
     image: mariadb:11
     container_name: nextcloud-db
@@ -347,7 +369,7 @@ services:
     volumes:
       - ./nextcloud:/var/www/html
     ports:
-      - 8080:80
+      - "8080:80"
     restart: unless-stopped
 YAML
 
@@ -359,15 +381,14 @@ EOS
 
 echo "🏠 VM105 Home Assistant stack kuruluyor..."
 
-sshpass -p "$SSH_PASS" ssh \
-  -o StrictHostKeyChecking=no \
-  "$SSH_USER@$HA_IP" "echo '$SSH_PASS' | su - root -c 'bash -s'" <<'EOS'
+run_remote "$HA_IP" <<'EOS'
 set -e
 
 mkdir -p /home/bacmaster/docker/homeassistant/config
 
 cat > /home/bacmaster/docker/homeassistant/docker-compose.yml <<'YAML'
 services:
+
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:stable
     container_name: homeassistant
@@ -389,15 +410,14 @@ EOS
 
 echo "🎞️ VM106 media stack kuruluyor..."
 
-sshpass -p "$SSH_PASS" ssh \
-  -o StrictHostKeyChecking=no \
-  "$SSH_USER@$MEDIA_IP" "echo '$SSH_PASS' | su - root -c 'bash -s'" <<'EOS'
+run_remote "$MEDIA_IP" <<'EOS'
 set -e
 
 mkdir -p /home/bacmaster/docker/media/{jellyfin,ollama,open-webui,immich}
 
 cat > /home/bacmaster/docker/media/docker-compose.yml <<'YAML'
 services:
+
   jellyfin:
     image: lscr.io/linuxserver/jellyfin:latest
     container_name: jellyfin
@@ -409,7 +429,7 @@ services:
       - ./jellyfin:/config
       - /mnt/media:/media
     ports:
-      - 8096:8096
+      - "8096:8096"
     restart: unless-stopped
 
   ollama:
@@ -418,7 +438,7 @@ services:
     volumes:
       - ./ollama:/root/.ollama
     ports:
-      - 11434:11434
+      - "11434:11434"
     restart: unless-stopped
 
   open-webui:
@@ -432,7 +452,7 @@ services:
     volumes:
       - ./open-webui:/app/backend/data
     ports:
-      - 3000:8080
+      - "3000:8080"
     restart: unless-stopped
 YAML
 
@@ -441,6 +461,7 @@ cd /home/bacmaster/docker/media/immich
 if [ ! -f docker-compose.yml ]; then
   curl -L https://github.com/immich-app/immich/releases/latest/download/docker-compose.yml -o docker-compose.yml
   curl -L https://github.com/immich-app/immich/releases/latest/download/example.env -o .env
+
   sed -i 's|UPLOAD_LOCATION=.*|UPLOAD_LOCATION=./library|' .env || true
   sed -i 's|DB_PASSWORD=.*|DB_PASSWORD=passkey1|' .env || true
   sed -i 's|TZ=.*|TZ=Europe/Istanbul|' .env || true
@@ -458,7 +479,6 @@ EOS
 echo
 echo "✅ PART3 Docker stack tamamlandı."
 echo
-echo "Kontrol adresleri:"
 echo "qBittorrent  : http://192.168.50.102:8080"
 echo "Prowlarr     : http://192.168.50.102:9696"
 echo "Sonarr       : http://192.168.50.102:8989"
