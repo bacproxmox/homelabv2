@@ -78,22 +78,18 @@ wait_ssh() {
 run_remote() {
   local IP="$1"
 
-  sshpass -p "$SSH_PASS" ssh \
-    -tt \
+  {
+    printf '%s\n' "$SSH_PASS"
+    cat
+  } | sshpass -p "$SSH_PASS" ssh \
     -o StrictHostKeyChecking=no \
     "$SSH_USER@$IP" \
-    "echo '$SSH_PASS' | sudo -S bash -s"
+    "sudo -S -p '' bash -s"
 }
 
 echo "🔎 SSH erişimleri kontrol ediliyor..."
 
-for IP in \
-  "$ARR_IP" \
-  "$NET_IP" \
-  "$NEXTCLOUD_IP" \
-  "$HA_IP" \
-  "$MEDIA_IP"
-do
+for IP in "$ARR_IP" "$NET_IP" "$NEXTCLOUD_IP" "$HA_IP" "$MEDIA_IP"; do
   wait_ssh "$IP"
 done
 
@@ -106,15 +102,7 @@ prepare_vm() {
 set -e
 
 apt update
-
-apt install -y \
-  curl \
-  wget \
-  nano \
-  htop \
-  git \
-  ca-certificates \
-  nfs-common
+apt install -y curl wget nano htop git ca-certificates nfs-common
 
 if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | sh
@@ -137,13 +125,7 @@ EOS
 
 echo "🐳 Docker/NFS hazırlığı yapılıyor..."
 
-for IP in \
-  "$ARR_IP" \
-  "$NET_IP" \
-  "$NEXTCLOUD_IP" \
-  "$HA_IP" \
-  "$MEDIA_IP"
-do
+for IP in "$ARR_IP" "$NET_IP" "$NEXTCLOUD_IP" "$HA_IP" "$MEDIA_IP"; do
   prepare_vm "$IP"
 done
 
@@ -153,16 +135,10 @@ run_remote "$ARR_IP" <<'EOS'
 set -e
 
 mkdir -p /home/bacmaster/docker/arr/{qbittorrent,prowlarr,sonarr,radarr,bazarr,jellyseerr,recyclarr}
-
-mkdir -p \
-  /mnt/media/downloads \
-  /mnt/media/movies \
-  /mnt/media/series \
-  /mnt/media/music
+mkdir -p /mnt/media/downloads /mnt/media/movies /mnt/media/series /mnt/media/music
 
 cat > /home/bacmaster/docker/arr/docker-compose.yml <<'YAML'
 services:
-
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:latest
     container_name: qbittorrent
@@ -278,7 +254,6 @@ ENV
 
 cat > /home/bacmaster/docker/network/docker-compose.yml <<'YAML'
 services:
-
   adguard:
     image: adguard/adguardhome:latest
     container_name: adguard
@@ -333,7 +308,6 @@ mkdir -p /home/bacmaster/docker/nextcloud/{nextcloud,db,redis}
 
 cat > /home/bacmaster/docker/nextcloud/docker-compose.yml <<'YAML'
 services:
-
   nextcloud-db:
     image: mariadb:11
     container_name: nextcloud-db
@@ -388,7 +362,6 @@ mkdir -p /home/bacmaster/docker/homeassistant/config
 
 cat > /home/bacmaster/docker/homeassistant/docker-compose.yml <<'YAML'
 services:
-
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:stable
     container_name: homeassistant
@@ -417,7 +390,6 @@ mkdir -p /home/bacmaster/docker/media/{jellyfin,ollama,open-webui,immich}
 
 cat > /home/bacmaster/docker/media/docker-compose.yml <<'YAML'
 services:
-
   jellyfin:
     image: lscr.io/linuxserver/jellyfin:latest
     container_name: jellyfin
