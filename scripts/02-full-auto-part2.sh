@@ -29,10 +29,10 @@ ask_visible_into() {
 
 echo "🚀 Part2 ISO Mode: TrueNAS API + Ubuntu ISO VM oluşturma"
 
-if [[ ! -f "$USERS_ENV" ]]; then
+[[ -f "$USERS_ENV" ]] || {
   echo "❌ $USERS_ENV yok. Önce Part1 çalışmalı."
   exit 1
-fi
+}
 
 source "$USERS_ENV"
 
@@ -85,14 +85,11 @@ tn_put() {
 if ! done_step "truenas_api"; then
   echo "🔍 TrueNAS API kontrol ediliyor..."
 
-  if ! tn_get "system/info" >/tmp/truenas-info.json; then
+  tn_get "system/info" >/tmp/truenas-info.json || {
     echo "❌ TrueNAS API erişimi başarısız."
-    echo "Kontrol et:"
-    echo "- TrueNAS IP: ${TRUENAS_IP}"
-    echo "- API key doğru mu?"
-    echo "- TrueNAS açık mı?"
+    echo "rm -f $PART2_ENV ile API key'i sıfırlayabilirsin."
     exit 1
-  fi
+  }
 
   if grep -qi "authentication" /tmp/truenas-info.json || grep -qi "unauthorized" /tmp/truenas-info.json; then
     echo "❌ TrueNAS API key hatalı görünüyor."
@@ -134,16 +131,44 @@ if ! done_step "truenas_datasets"; then
     tn_post "pool/dataset" "{\"name\": \"${ds}\", \"share_type\": \"GENERIC\"}" >/dev/null || true
   done
 
-  tn_post "sharing/nfs" "{
+  echo "🔐 Dataset ownership/ACL hazırlanıyor..."
+
+  tn_post "filesystem/chown" "{
+    \"path\": \"/mnt/tank/media\",
+    \"uid\": ${MEDIA_UID},
+    \"gid\": ${MEDIA_GID},
+    \"options\": {
+      \"recursive\": true,
+      \"traverse\": true
+    }
+  }" >/dev/null || true
+
+  echo "📡 NFS share oluşturuluyor/güncelleniyor..."
+
+  EXISTING_NFS_ID="$(tn_get "sharing/nfs" | grep -oE '"id":[0-9]+|"paths":\["/mnt/tank/media"\]' | awk '
+    /"id":/ {id=$0; gsub(/[^0-9]/,"",id)}
+    /"paths":/ {print id}
+  ' | head -n1)"
+
+  NFS_PAYLOAD="{
     \"paths\": [\"/mnt/tank/media\"],
     \"comment\": \"tank media NFS\",
     \"enabled\": true,
+    \"networks\": [\"192.168.50.0/24\"],
     \"mapall_user\": \"${MEDIA_USER}\",
-    \"mapall_group\": \"${MEDIA_USER}\"
-  }" >/dev/null || true
+    \"mapall_group\": \"${MEDIA_USER}\",
+    \"ro\": false
+  }"
+
+  if [[ -n "${EXISTING_NFS_ID:-}" ]]; then
+    tn_put "sharing/nfs/id/${EXISTING_NFS_ID}" "$NFS_PAYLOAD" >/dev/null || true
+  else
+    tn_post "sharing/nfs" "$NFS_PAYLOAD" >/dev/null || true
+  fi
 
   tn_put "service/id/nfs" "{\"enable\": true}" >/dev/null || true
   tn_post "service/start" "{\"service\": \"nfs\"}" >/dev/null || true
+  tn_post "service/restart" "{\"service\": \"nfs\"}" >/dev/null || true
 
   mark_step "truenas_datasets"
   echo "✅ TrueNAS dataset/NFS tamam"
@@ -177,8 +202,9 @@ create_iso_vm() {
     --balloon 0 \
     --vga virtio
 
-  qm set "$ID" --efidisk0 "$VM_STORAGE":1,format=raw,efitype=4m
   DISK_SIZE="${DISK%G}"
+
+  qm set "$ID" --efidisk0 "$VM_STORAGE":1,format=raw,efitype=4m
   qm set "$ID" --scsi0 "${VM_STORAGE}:${DISK_SIZE}",discard=on,ssd=1,iothread=1
   qm set "$ID" --ide2 "$UBUNTU_ISO",media=cdrom
   qm set "$ID" --boot order=ide2
