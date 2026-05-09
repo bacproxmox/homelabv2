@@ -19,19 +19,28 @@ iommu_is_active() {
 }
 
 ask_text_into() {
-  local __var="$1" prompt="$2" default="$3" input=""
+  local __var="$1"
+  local prompt="$2"
+  local default="$3"
+  local input=""
+
   read -r -p "$prompt [$default]: " input
   input="${input:-$default}"
+
   printf -v "$__var" "%s" "$input"
 }
 
 ask_password_into() {
-  local __var="$1" prompt="$2" input=""
+  local __var="$1"
+  local prompt="$2"
+  local input=""
+
   while true; do
     read -r -p "$prompt: " input
     [[ -n "$input" ]] && break
     echo "Boş bırakılamaz."
   done
+
   printf -v "$__var" "%s" "$input"
 }
 
@@ -317,15 +326,8 @@ if ! step_done "truenas_vm"; then
   DISK_TANK="/dev/disk/by-id/ata-TOSHIBA_MG10ACA20TE_4580A0BSF4MJ"
   DISK_PRIVATE="/dev/disk/by-id/ata-ST4000NM0053_Z1Z5KNAT"
 
-  if [[ ! -e "$DISK_TANK" ]]; then
-    echo "❌ 20TB tank disk bulunamadı: $DISK_TANK"
-    exit 1
-  fi
-
-  if [[ ! -e "$DISK_PRIVATE" ]]; then
-    echo "❌ 4TB private disk bulunamadı: $DISK_PRIVATE"
-    exit 1
-  fi
+  [[ -e "$DISK_TANK" ]] || { echo "❌ 20TB tank disk bulunamadı: $DISK_TANK"; exit 1; }
+  [[ -e "$DISK_PRIVATE" ]] || { echo "❌ 4TB private disk bulunamadı: $DISK_PRIVATE"; exit 1; }
 
   if qm status "$VMID" &>/dev/null; then
     echo "✅ VM $VMID zaten var, oluşturma atlandı"
@@ -347,7 +349,6 @@ if ! step_done "truenas_vm"; then
     qm set "$VMID" --scsi0 nvme-vm:64,discard=on,ssd=1,iothread=1
     qm set "$VMID" --ide2 "$ISO",media=cdrom
     qm set "$VMID" --boot order=ide2
-
     qm set "$VMID" --scsi1 "$DISK_TANK",serial=TANK20TB
     qm set "$VMID" --scsi2 "$DISK_PRIVATE",serial=PRIVATE4TB
   fi
