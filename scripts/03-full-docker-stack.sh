@@ -58,7 +58,7 @@ fi
 source "$CF_ENV"
 
 apt update
-apt install -y sshpass
+apt install -y sshpass curl
 
 wait_ssh() {
   local IP="$1"
@@ -111,15 +111,84 @@ fi
 mkdir -p /mnt/media
 
 grep -q "192.168.50.101:/mnt/tank/media" /etc/fstab || \
-echo '192.168.50.101:/mnt/tank/media /mnt/media nfs defaults,_netdev,x-systemd.automount,noatime 0 0' >> /etc/fstab
+echo '192.168.50.101:/mnt/tank/media /mnt/media nfs defaults,_netdev,x-systemd.automount,noatime,nofail 0 0' >> /etc/fstab
+
+mkdir -p /etc/systemd/system/docker.service.d
+
+cat > /etc/systemd/system/docker.service.d/override.conf <<'EOF'
+[Unit]
+After=network-online.target remote-fs.target
+Wants=network-online.target remote-fs.target
+EOF
+
+cat > /usr/local/sbin/homelab-recover-stack.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+mount -a || true
+
+for i in {1..20}; do
+  if mountpoint -q /mnt/media || [[ ! -f /etc/homelab-needs-media ]]; then
+    break
+  fi
+  sleep 3
+  mount -a || true
+done
+
+if [[ -f /etc/homelab-stack-dirs ]]; then
+  while read -r dir; do
+    [[ -z "$dir" ]] && continue
+    [[ -d "$dir" ]] || continue
+    cd "$dir"
+    docker compose up -d || true
+  done < /etc/homelab-stack-dirs
+fi
+EOF
+
+chmod +x /usr/local/sbin/homelab-recover-stack.sh
+
+cat > /etc/systemd/system/homelab-recover-stack.service <<'EOF'
+[Unit]
+Description=HomeLab Docker stack recovery after NFS/network
+After=network-online.target remote-fs.target docker.service
+Wants=network-online.target remote-fs.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homelab-recover-stack.sh
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 systemctl daemon-reload
+systemctl enable docker || true
+systemctl enable homelab-recover-stack.service || true
+
 mount -a || true
 
 mkdir -p /home/bacmaster/docker
 chown -R bacmaster:bacmaster /home/bacmaster/docker
 
 usermod -aG docker bacmaster || true
+EOS
+}
+
+register_stack_remote() {
+  local IP="$1"
+  local DIR="$2"
+  local NEEDS_MEDIA="${3:-yes}"
+
+  run_remote "$IP" <<EOS
+set -e
+touch /etc/homelab-stack-dirs
+grep -qxF "$DIR" /etc/homelab-stack-dirs || echo "$DIR" >> /etc/homelab-stack-dirs
+if [[ "$NEEDS_MEDIA" == "yes" ]]; then
+  touch /etc/homelab-needs-media
+fi
+systemctl daemon-reload
+systemctl enable homelab-recover-stack.service || true
 EOS
 }
 
@@ -236,10 +305,11 @@ services:
 YAML
 
 chown -R bacmaster:bacmaster /home/bacmaster/docker/arr
-
 cd /home/bacmaster/docker/arr
-docker compose up -d
+docker compose up -d || true
 EOS
+
+register_stack_remote "$ARR_IP" "/home/bacmaster/docker/arr" "yes"
 
 echo "🌐 VM103 docker-network stack kuruluyor..."
 
@@ -292,10 +362,11 @@ services:
 YAML
 
 chown -R bacmaster:bacmaster /home/bacmaster/docker/network
-
 cd /home/bacmaster/docker/network
-docker compose up -d
+docker compose up -d || true
 EOS
+
+register_stack_remote "$NET_IP" "/home/bacmaster/docker/network" "no"
 
 echo "☁️ VM104 nextcloud stack kuruluyor..."
 
@@ -346,10 +417,11 @@ services:
 YAML
 
 chown -R bacmaster:bacmaster /home/bacmaster/docker/nextcloud
-
 cd /home/bacmaster/docker/nextcloud
-docker compose up -d
+docker compose up -d || true
 EOS
+
+register_stack_remote "$NEXTCLOUD_IP" "/home/bacmaster/docker/nextcloud" "no"
 
 echo "🏠 VM105 Home Assistant stack kuruluyor..."
 
@@ -374,10 +446,11 @@ services:
 YAML
 
 chown -R bacmaster:bacmaster /home/bacmaster/docker/homeassistant
-
 cd /home/bacmaster/docker/homeassistant
-docker compose up -d
+docker compose up -d || true
 EOS
+
+register_stack_remote "$HA_IP" "/home/bacmaster/docker/homeassistant" "no"
 
 echo "🎞️ VM106 media stack kuruluyor..."
 
@@ -428,10 +501,9 @@ YAML
 
 cd /home/bacmaster/docker/media/immich
 
-if [ ! -f docker-compose.yml ]; then
+if [[ ! -f docker-compose.yml ]]; then
   curl -L https://github.com/immich-app/immich/releases/latest/download/docker-compose.yml -o docker-compose.yml
   curl -L https://github.com/immich-app/immich/releases/latest/download/example.env -o .env
-
   sed -i 's|UPLOAD_LOCATION=.*|UPLOAD_LOCATION=./library|' .env || true
   sed -i 's|DB_PASSWORD=.*|DB_PASSWORD=passkey1|' .env || true
   sed -i 's|TZ=.*|TZ=Europe/Istanbul|' .env || true
@@ -440,28 +512,46 @@ fi
 chown -R bacmaster:bacmaster /home/bacmaster/docker/media
 
 cd /home/bacmaster/docker/media
-docker compose up -d
+docker compose up -d || true
 
 cd /home/bacmaster/docker/media/immich
-docker compose up -d
+docker compose up -d || true
 EOS
+
+register_stack_remote "$MEDIA_IP" "/home/bacmaster/docker/media" "yes"
+register_stack_remote "$MEDIA_IP" "/home/bacmaster/docker/media/immich" "yes"
+
+healthcheck() {
+  local name="$1"
+  local url="$2"
+
+  if curl -fsS --max-time 5 "$url" >/dev/null 2>&1; then
+    echo "✅ $name : $url"
+  else
+    echo "❌ $name : $url"
+  fi
+}
+
+echo
+echo "🔍 Healthcheck başlıyor..."
+echo
+
+healthcheck "qBittorrent"   "http://192.168.50.102:8080"
+healthcheck "Prowlarr"      "http://192.168.50.102:9696"
+healthcheck "Sonarr"        "http://192.168.50.102:8989"
+healthcheck "Radarr"        "http://192.168.50.102:7878"
+healthcheck "Bazarr"        "http://192.168.50.102:6767"
+healthcheck "Jellyseerr"    "http://192.168.50.102:5055"
+healthcheck "AdGuard"       "http://192.168.50.103:3000"
+healthcheck "Uptime Kuma"   "http://192.168.50.103:3001"
+healthcheck "Flaresolverr"  "http://192.168.50.103:8191"
+healthcheck "Nextcloud"     "http://192.168.50.104:8080"
+healthcheck "HomeAssistant" "http://192.168.50.105:8123"
+healthcheck "Jellyfin"      "http://192.168.50.106:8096"
+healthcheck "Ollama"        "http://192.168.50.106:11434"
+healthcheck "Open WebUI"    "http://192.168.50.106:3000"
+healthcheck "Immich"        "http://192.168.50.106:2283"
 
 echo
 echo "✅ PART3 Docker stack tamamlandı."
-echo
-echo "qBittorrent  : http://192.168.50.102:8080"
-echo "Prowlarr     : http://192.168.50.102:9696"
-echo "Sonarr       : http://192.168.50.102:8989"
-echo "Radarr       : http://192.168.50.102:7878"
-echo "Bazarr       : http://192.168.50.102:6767"
-echo "Jellyseerr   : http://192.168.50.102:5055"
-echo "AdGuard      : http://192.168.50.103:3000"
-echo "Uptime Kuma  : http://192.168.50.103:3001"
-echo "Flaresolverr : http://192.168.50.103:8191"
-echo "Nextcloud    : http://192.168.50.104:8080"
-echo "HomeAssistant: http://192.168.50.105:8123"
-echo "Jellyfin     : http://192.168.50.106:8096"
-echo "Ollama       : http://192.168.50.106:11434"
-echo "Open WebUI   : http://192.168.50.106:3000"
-echo "Immich       : http://192.168.50.106:2283"
 echo
