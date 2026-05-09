@@ -1,24 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export TERM=xterm
-
 REPO_URL="https://github.com/bacproxmox/homelabv2.git"
 TARGET_DIR="/root/homelab"
 
 echo "🚀 Bacmaster bootstrap başlıyor..."
 
 echo "🔧 Enterprise repo kapatılıyor..."
+rm -f /etc/apt/sources.list.d/pve-enterprise.list 2>/dev/null || true
+rm -f /etc/apt/sources.list.d/pve-enterprise.sources 2>/dev/null || true
+rm -f /etc/apt/sources.list.d/ceph.list 2>/dev/null || true
+rm -f /etc/apt/sources.list.d/ceph.sources 2>/dev/null || true
 
-rm -f /etc/apt/sources.list.d/pve-enterprise.sources
-rm -f /etc/apt/sources.list.d/ceph.sources
-rm -f /etc/apt/sources.list.d/pve-enterprise.list
-rm -f /etc/apt/sources.list.d/ceph.list
-
-. /etc/os-release
-
-echo "deb http://download.proxmox.com/debian/pve $VERSION_CODENAME pve-no-subscription" \
-  > /etc/apt/sources.list.d/pve-no-subscription.list
+echo "deb http://download.proxmox.com/debian/pve trixie pve-no-subscription" > /etc/apt/sources.list.d/pve-no-subscription.list
 
 apt update
 apt install -y git curl wget nano
@@ -32,12 +26,13 @@ if [[ -d "$TARGET_DIR/.git" ]]; then
 else
   rm -rf "$TARGET_DIR"
   git clone "$REPO_URL" "$TARGET_DIR"
-  cd "$TARGET_DIR"
 fi
 
-chmod +x install.sh
-chmod +x scripts/*.sh
+chmod +x "$TARGET_DIR/install.sh" || true
+chmod +x "$TARGET_DIR"/scripts/*.sh || true
 
 echo "✅ Bootstrap tamam."
 echo
+echo "Installer başlatılıyor..."
+cd "$TARGET_DIR"
 bash install.sh
