@@ -54,7 +54,7 @@ if [[ ! -f "$POST_ENV" ]]; then
   ask_visible_into QBIT_USER "qBittorrent user" "admin"
   ask_visible_into QBIT_PASS "qBittorrent password"
 
-  ask_visible_into ARR_ADMIN_USER "Sonarr/Radarr/Prowlarr admin user" "admin"
+  ask_visible_into ARR_ADMIN_USER "Sonarr/Radarr/Prowlarr admin user" "$BACMASTER_USER"
   ask_visible_into ARR_ADMIN_PASS "Sonarr/Radarr/Prowlarr admin password"
 
   cat > "$POST_ENV" <<EOF
