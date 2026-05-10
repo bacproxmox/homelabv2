@@ -207,6 +207,42 @@ echo "🔑 API key kontrolü:"
 echo
 echo "⬇️ qBittorrent ayarlanıyor..."
 
+echo
+echo "🛠 qBittorrent WebUI güvenlik ayarları düzeltiliyor..."
+
+QBIT_CONF="/home/bacmaster/docker/arr/qbittorrent/qBittorrent/qBittorrent.conf"
+
+if [[ ! -f "\$QBIT_CONF" ]]; then
+  QBIT_CONF="/home/bacmaster/docker/arr/qbittorrent/config/qBittorrent/qBittorrent.conf"
+fi
+
+mkdir -p "\$(dirname "\$QBIT_CONF")"
+touch "\$QBIT_CONF"
+
+cp "\$QBIT_CONF" "\$QBIT_CONF.bak.\$(date +%Y%m%d-%H%M%S)" || true
+
+set_qbit_conf() {
+  local key="\$1"
+  local value="\$2"
+
+  if grep -q "^\${key}=" "\$QBIT_CONF"; then
+    sed -i "s|^\${key}=.*|\${key}=\${value}|g" "\$QBIT_CONF"
+  else
+    echo "\${key}=\${value}" >> "\$QBIT_CONF"
+  fi
+}
+
+set_qbit_conf 'WebUI\\HostHeaderValidation' 'false'
+set_qbit_conf 'WebUI\\CSRFProtection' 'false'
+set_qbit_conf 'WebUI\\LocalHostAuth' 'false'
+set_qbit_conf 'WebUI\\AuthSubnetWhitelistEnabled' 'true'
+set_qbit_conf 'WebUI\\AuthSubnetWhitelist' '192.168.50.0/24,127.0.0.1'
+
+docker restart qbittorrent >/dev/null 2>&1 || true
+sleep 15
+
+ok "qBittorrent WebUI güvenlik ayarları güncellendi"
+
 COOKIE_FILE="\$(mktemp)"
 
 qbit_login() {
@@ -214,6 +250,8 @@ qbit_login() {
   local pass="\$2"
 
   curl -fsS -c "\$COOKIE_FILE" \
+    -H "Referer: \$QBIT_URL" \
+    -H "Origin: \$QBIT_URL" \
     --data-urlencode "username=\$user" \
     --data-urlencode "password=\$pass" \
     "\$QBIT_URL/api/v2/auth/login" || true
@@ -273,15 +311,21 @@ EOF
 )"
 
   curl -fsS -b "\$COOKIE_FILE" \
+    -H "Referer: \$QBIT_URL" \
+    -H "Origin: \$QBIT_URL" \
     --data-urlencode "json=\$PREFS" \
     "\$QBIT_URL/api/v2/app/setPreferences" >/dev/null || true
 
   curl -fsS -b "\$COOKIE_FILE" \
+    -H "Referer: \$QBIT_URL" \
+    -H "Origin: \$QBIT_URL" \
     --data-urlencode "category=sonarr" \
     --data-urlencode "savePath=/downloads/sonarr" \
     "\$QBIT_URL/api/v2/torrents/createCategory" >/dev/null || true
 
   curl -fsS -b "\$COOKIE_FILE" \
+    -H "Referer: \$QBIT_URL" \
+    -H "Origin: \$QBIT_URL" \
     --data-urlencode "category=radarr" \
     --data-urlencode "savePath=/downloads/radarr" \
     "\$QBIT_URL/api/v2/torrents/createCategory" >/dev/null || true
