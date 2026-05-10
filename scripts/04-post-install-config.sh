@@ -225,12 +225,29 @@ if [[ "\$LOGIN_RESPONSE" != "Ok." ]]; then
   warn "Kalıcı qBittorrent şifresiyle login olmadı, geçici şifre loglardan aranıyor..."
 
   TEMP_PASS="\$(docker logs qbittorrent 2>&1 \
-    | grep -iE 'temporary password|password' \
-    | grep -oE '[A-Za-z0-9_=-]{8,}' \
-    | tail -n1 || true)"
+    | awk -F': ' '/temporary password/ {print \$NF}' \
+    | tail -n1 \
+    | tr -d '\r' || true)"
+
+  if [[ -z "\$TEMP_PASS" ]]; then
+    TEMP_PASS="\$(docker logs qbittorrent 2>&1 \
+      | grep -i 'temporary password' \
+      | sed -E 's/.*password[: ]+//I' \
+      | tail -n1 \
+      | tr -d '\r' || true)"
+  fi
+
+  if [[ -z "\$TEMP_PASS" ]]; then
+    TEMP_PASS="\$(docker logs qbittorrent 2>&1 \
+      | grep -iE 'temporary.*password|password.*temporary' \
+      | grep -oE '[A-Za-z0-9_+=/@#%.,:;-]{8,}' \
+      | tail -n1 \
+      | tr -d '\r' || true)"
+  fi
 
   if [[ -n "\$TEMP_PASS" ]]; then
-    echo "🔑 Geçici qBittorrent şifresi bulundu, login deneniyor..."
+    echo "🔑 Geçici qBittorrent şifresi bulundu: \$TEMP_PASS"
+    echo "🔐 Geçici şifreyle login deneniyor..."
     LOGIN_RESPONSE="\$(qbit_login "admin" "\$TEMP_PASS")"
   else
     warn "Geçici qBittorrent şifresi loglarda bulunamadı."
