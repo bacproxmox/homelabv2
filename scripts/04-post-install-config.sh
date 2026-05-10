@@ -209,15 +209,56 @@ echo "⬇️ qBittorrent ayarlanıyor..."
 
 COOKIE_FILE="\$(mktemp)"
 
-LOGIN_RESPONSE="\$(curl -fsS -c "\$COOKIE_FILE" \
-  --data "username=\$QBIT_USER&password=\$QBIT_PASS" \
-  "\$QBIT_URL/api/v2/auth/login" || true)"
+qbit_login() {
+  local user="\$1"
+  local pass="\$2"
+
+  curl -fsS -c "\$COOKIE_FILE" \
+    --data-urlencode "username=\$user" \
+    --data-urlencode "password=\$pass" \
+    "\$QBIT_URL/api/v2/auth/login" || true
+}
+
+LOGIN_RESPONSE="\$(qbit_login "\$QBIT_USER" "\$QBIT_PASS")"
+
+if [[ "\$LOGIN_RESPONSE" != "Ok." ]]; then
+  warn "Kalıcı qBittorrent şifresiyle login olmadı, geçici şifre loglardan aranıyor..."
+
+  TEMP_PASS="\$(docker logs qbittorrent 2>&1 \
+    | grep -iE 'temporary password|password' \
+    | grep -oE '[A-Za-z0-9_=-]{8,}' \
+    | tail -n1 || true)"
+
+  if [[ -n "\$TEMP_PASS" ]]; then
+    echo "🔑 Geçici qBittorrent şifresi bulundu, login deneniyor..."
+    LOGIN_RESPONSE="\$(qbit_login "admin" "\$TEMP_PASS")"
+  else
+    warn "Geçici qBittorrent şifresi loglarda bulunamadı."
+  fi
+fi
 
 if [[ "\$LOGIN_RESPONSE" != "Ok." ]]; then
   warn "qBittorrent login başarısız."
-  warn "Geçici şifre için:"
+  warn "Manuel kontrol:"
   echo "docker logs qbittorrent | grep -i password"
 else
+  ok "qBittorrent login başarılı"
+
+  PREFS="\$(cat <<EOF
+{
+  "web_ui_username": "\$QBIT_USER",
+  "web_ui_password": "\$QBIT_PASS",
+  "save_path": "/downloads/",
+  "temp_path_enabled": false,
+  "create_subfolder_enabled": true
+}
+EOF
+)"
+
+  curl -fsS -b "\$COOKIE_FILE" \
+    --data-urlencode "json=\$PREFS" \
+    "\$QBIT_URL/api/v2/app/setPreferences" >/dev/null || true
+
   curl -fsS -b "\$COOKIE_FILE" \
     --data-urlencode "category=sonarr" \
     --data-urlencode "savePath=/downloads/sonarr" \
@@ -228,13 +269,10 @@ else
     --data-urlencode "savePath=/downloads/radarr" \
     "\$QBIT_URL/api/v2/torrents/createCategory" >/dev/null || true
 
-  PREFS='{"save_path":"/downloads/","temp_path_enabled":false,"create_subfolder_enabled":true}'
+  docker restart qbittorrent >/dev/null 2>&1 || true
+  sleep 8
 
-  curl -fsS -b "\$COOKIE_FILE" \
-    --data-urlencode "json=\$PREFS" \
-    "\$QBIT_URL/api/v2/app/setPreferences" >/dev/null || true
-
-  ok "qBittorrent kategori/path ayarları tamam"
+  ok "qBittorrent kullanıcı/şifre ve kategori/path ayarları tamam"
 fi
 
 rm -f "\$COOKIE_FILE"
