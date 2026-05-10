@@ -7,11 +7,9 @@ warn() { echo "⚠️ $1"; }
 
 [[ -f /tmp/homelab-arr-keys.env ]] && source /tmp/homelab-arr-keys.env
 
-BAZARR_CONFIG_DIR="$ARR_DIR/bazarr/config"
+BAZARR_DIR="$ARR_DIR/bazarr"
 
-log "Bazarr temel klasör/config kontrolü..."
-
-mkdir -p "$BAZARR_CONFIG_DIR"
+log "Bazarr erişim kontrolü..."
 
 docker restart bazarr >/dev/null 2>&1 || true
 sleep 10
@@ -22,11 +20,9 @@ else
   warn "Bazarr erişilemiyor"
 fi
 
-log "Bazarr Sonarr/Radarr bağlantı notları yazılıyor..."
+log "Bazarr Sonarr/Radarr bağlantı bilgileri yazılıyor..."
 
-cat > "$ARR_DIR/bazarr/homelab-bazarr-settings.txt" <<EOF
-Bazarr otomasyon notu:
-
+cat > "$BAZARR_DIR/homelab-bazarr-settings.txt" <<EOF
 Sonarr:
   URL: http://192.168.50.102:8989
   API Key: ${SONARR_KEY:-YOK}
@@ -35,14 +31,12 @@ Radarr:
   URL: http://192.168.50.102:7878
   API Key: ${RADARR_KEY:-YOK}
 
-Diller:
-  Turkish / German / English
-
-Not:
-Bazarr API/config formatı sürüme göre değişebildiği için bu modül şu an güvenli hazırlık yapar.
-Sonraki iterasyonda config.yaml formatı netleşince otomatik provider/dil ayarı basılacak.
+Language profile hedefi:
+  Turkish
+  German
+  English
 EOF
 
-chown -R 1000:1000 "$ARR_DIR/bazarr" || true
+chown -R 1000:1000 "$BAZARR_DIR" || true
 
 ok "Bazarr hazırlık tamam"
