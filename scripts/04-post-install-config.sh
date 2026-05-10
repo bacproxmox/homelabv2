@@ -151,10 +151,10 @@ set_xml_value() {
   local key="\$2"
   local value="\$3"
 
-  if [[ ! -f "\$file" ]]; then
+  [[ -f "\$file" ]] || {
     warn "Config yok: \$file"
     return 0
-  fi
+  }
 
   cp "\$file" "\$file.bak.\$(date +%Y%m%d-%H%M%S)" || true
 
@@ -207,99 +207,72 @@ echo "🔑 API key kontrolü:"
 echo
 echo "⬇️ qBittorrent ayarlanıyor..."
 
-echo
-echo "🛠 qBittorrent WebUI güvenlik ayarları düzeltiliyor..."
-
 QBIT_CONF="/home/bacmaster/docker/arr/qbittorrent/qBittorrent/qBittorrent.conf"
 
-if [[ ! -f "\$QBIT_CONF" ]]; then
-  QBIT_CONF="/home/bacmaster/docker/arr/qbittorrent/config/qBittorrent/qBittorrent.conf"
-fi
+echo "🛑 qBittorrent durduruluyor..."
+docker stop qbittorrent >/dev/null 2>&1 || true
 
-mkdir -p "\$(dirname "\$QBIT_CONF")"
-touch "\$QBIT_CONF"
+echo "🛠 qBittorrent config güvenlik ayarları yazılıyor..."
 
-cp "\$QBIT_CONF" "\$QBIT_CONF.bak.\$(date +%Y%m%d-%H%M%S)" || true
+python3 - <<PY
+from pathlib import Path
 
-set_qbit_conf() {
-  local key="\$1"
-  local value="\$2"
+conf = Path("$QBIT_CONF")
+conf.parent.mkdir(parents=True, exist_ok=True)
 
-  if grep -q "^\${key}=" "\$QBIT_CONF"; then
-    sed -i "s|^\${key}=.*|\${key}=\${value}|g" "\$QBIT_CONF"
-  else
-    echo "\${key}=\${value}" >> "\$QBIT_CONF"
-  fi
+text = conf.read_text() if conf.exists() else ""
+
+if "[Preferences]" not in text:
+    text += "\\n[Preferences]\\n"
+
+settings = {
+    r"WebUI\\HostHeaderValidation": "false",
+    r"WebUI\\CSRFProtection": "false",
+    r"WebUI\\LocalHostAuth": "false",
+    r"WebUI\\AuthSubnetWhitelistEnabled": "true",
+    r"WebUI\\AuthSubnetWhitelist": "127.0.0.1,192.168.50.0/24",
+    r"WebUI\\Username": "$QBIT_USER",
 }
 
-set_qbit_conf 'WebUI\\HostHeaderValidation' 'false'
-set_qbit_conf 'WebUI\\CSRFProtection' 'false'
-set_qbit_conf 'WebUI\\LocalHostAuth' 'false'
-set_qbit_conf 'WebUI\\AuthSubnetWhitelistEnabled' 'true'
-set_qbit_conf 'WebUI\\AuthSubnetWhitelist' '192.168.50.0/24,127.0.0.1'
+lines = text.splitlines()
+out = []
+seen = set()
 
-docker restart qbittorrent >/dev/null 2>&1 || true
-sleep 15
+for line in lines:
+    replaced = False
+    for k, v in settings.items():
+        if line.startswith(k + "="):
+            out.append(f"{k}={v}")
+            seen.add(k)
+            replaced = True
+            break
+    if not replaced:
+        out.append(line)
 
-ok "qBittorrent WebUI güvenlik ayarları güncellendi"
+for k, v in settings.items():
+    if k not in seen:
+        out.append(f"{k}={v}")
 
-COOKIE_FILE="\$(mktemp)"
+conf.write_text("\\n".join(out) + "\\n")
+PY
 
-qbit_login() {
-  local user="\$1"
-  local pass="\$2"
+chown -R 1000:1000 /home/bacmaster/docker/arr/qbittorrent || true
 
-  curl -fsS -c "\$COOKIE_FILE" \
-    -H "Referer: \$QBIT_URL" \
-    -H "Origin: \$QBIT_URL" \
-    --data-urlencode "username=\$user" \
-    --data-urlencode "password=\$pass" \
-    "\$QBIT_URL/api/v2/auth/login" || true
-}
+echo "▶️ qBittorrent başlatılıyor..."
+docker start qbittorrent >/dev/null 2>&1 || true
+sleep 20
 
-LOGIN_RESPONSE="\$(qbit_login "\$QBIT_USER" "\$QBIT_PASS")"
+echo "🔎 qBittorrent local API test ediliyor..."
 
-if [[ "\$LOGIN_RESPONSE" != "Ok." ]]; then
-  warn "Kalıcı qBittorrent şifresiyle login olmadı, geçici şifre loglardan aranıyor..."
-
-  TEMP_PASS="\$(docker logs qbittorrent 2>&1 \
-    | awk -F': ' '/temporary password/ {print \$NF}' \
-    | tail -n1 \
-    | tr -d '\r' || true)"
-
-  if [[ -z "\$TEMP_PASS" ]]; then
-    TEMP_PASS="\$(docker logs qbittorrent 2>&1 \
-      | grep -i 'temporary password' \
-      | sed -E 's/.*password[: ]+//I' \
-      | tail -n1 \
-      | tr -d '\r' || true)"
-  fi
-
-  if [[ -z "\$TEMP_PASS" ]]; then
-    TEMP_PASS="\$(docker logs qbittorrent 2>&1 \
-      | grep -iE 'temporary.*password|password.*temporary' \
-      | grep -oE '[A-Za-z0-9_+=/@#%.,:;-]{8,}' \
-      | tail -n1 \
-      | tr -d '\r' || true)"
-  fi
-
-  if [[ -n "\$TEMP_PASS" ]]; then
-    echo "🔑 Geçici qBittorrent şifresi bulundu: \$TEMP_PASS"
-    echo "🔐 Geçici şifreyle login deneniyor..."
-    LOGIN_RESPONSE="\$(qbit_login "admin" "\$TEMP_PASS")"
-  else
-    warn "Geçici qBittorrent şifresi loglarda bulunamadı."
-  fi
-fi
-
-if [[ "\$LOGIN_RESPONSE" != "Ok." ]]; then
-  warn "qBittorrent login başarısız."
-  warn "Manuel kontrol:"
-  echo "docker logs qbittorrent | grep -i password"
+if curl -fsS --max-time 5 "\$QBIT_URL/api/v2/app/version" >/dev/null 2>&1; then
+  ok "qBittorrent API localhost auth bypass aktif"
 else
-  ok "qBittorrent login başarılı"
+  warn "qBittorrent API hâlâ 403/erişimsiz olabilir"
+fi
 
-  PREFS="\$(cat <<EOF
+echo "⚙️ qBittorrent preferences basılıyor..."
+
+QBIT_PREFS="\$(cat <<EOF
 {
   "web_ui_username": "\$QBIT_USER",
   "web_ui_password": "\$QBIT_PASS",
@@ -310,33 +283,25 @@ else
 EOF
 )"
 
-  curl -fsS -b "\$COOKIE_FILE" \
-    -H "Referer: \$QBIT_URL" \
-    -H "Origin: \$QBIT_URL" \
-    --data-urlencode "json=\$PREFS" \
-    "\$QBIT_URL/api/v2/app/setPreferences" >/dev/null || true
+curl -fsS \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "json=\$QBIT_PREFS" \
+  "\$QBIT_URL/api/v2/app/setPreferences" >/dev/null || warn "qBittorrent preferences basılamadı"
 
-  curl -fsS -b "\$COOKIE_FILE" \
-    -H "Referer: \$QBIT_URL" \
-    -H "Origin: \$QBIT_URL" \
-    --data-urlencode "category=sonarr" \
-    --data-urlencode "savePath=/downloads/sonarr" \
-    "\$QBIT_URL/api/v2/torrents/createCategory" >/dev/null || true
+curl -fsS \
+  --data-urlencode "category=sonarr" \
+  --data-urlencode "savePath=/downloads/sonarr" \
+  "\$QBIT_URL/api/v2/torrents/createCategory" >/dev/null || true
 
-  curl -fsS -b "\$COOKIE_FILE" \
-    -H "Referer: \$QBIT_URL" \
-    -H "Origin: \$QBIT_URL" \
-    --data-urlencode "category=radarr" \
-    --data-urlencode "savePath=/downloads/radarr" \
-    "\$QBIT_URL/api/v2/torrents/createCategory" >/dev/null || true
+curl -fsS \
+  --data-urlencode "category=radarr" \
+  --data-urlencode "savePath=/downloads/radarr" \
+  "\$QBIT_URL/api/v2/torrents/createCategory" >/dev/null || true
 
-  docker restart qbittorrent >/dev/null 2>&1 || true
-  sleep 8
+docker restart qbittorrent >/dev/null 2>&1 || true
+sleep 15
 
-  ok "qBittorrent kullanıcı/şifre ve kategori/path ayarları tamam"
-fi
-
-rm -f "\$COOKIE_FILE"
+ok "qBittorrent config/preference işlemi tamamlandı"
 
 echo
 echo "📁 Root folder ayarları deneniyor..."
