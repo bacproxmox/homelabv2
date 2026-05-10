@@ -8,6 +8,7 @@ echo
 echo "1) Part1 - Proxmox + TrueNAS VM"
 echo "2) Part2 - TrueNAS API + Ubuntu ISO VM'ler"
 echo "3) Part3 - Docker Stack"
+echo "4) Part4 - Servis içi ayarlar / Post Install"
 echo "all) Hepsi sırayla"
 echo
 
@@ -23,10 +24,14 @@ case "$CHOICE" in
   3)
     bash scripts/03-full-docker-stack.sh
     ;;
+  4)
+    bash scripts/04-post-install-config.sh
+    ;;
   all)
     bash scripts/01-bootstrap-truenas.sh
     bash scripts/02-full-auto-part2.sh
     bash scripts/03-full-docker-stack.sh
+    bash scripts/04-post-install-config.sh
     ;;
   *)
     echo "Geçersiz seçim."
