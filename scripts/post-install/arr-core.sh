@@ -182,7 +182,42 @@ sleep 12
 
 ok "qBittorrent config/preference işlemi tamamlandı"
 
-log "Root folder ayarları deneniyor..."
+log "Root folder ayarları uygulanıyor..."
+
+add_root_folder() {
+  local app="$1"
+  local url="$2"
+  local key="$3"
+  local path="$4"
+
+  [[ -n "$key" ]] || {
+    warn "$app API key yok, root folder atlandı"
+    return 0
+  }
+
+  EXISTING="$(curl -fsS -H "X-Api-Key: $key" "$url/api/v3/rootfolder" || true)"
+
+  if echo "$EXISTING" | grep -q "\"path\":\"$path\""; then
+    ok "$app root folder zaten var: $path"
+    return 0
+  fi
+
+  RESP="$(curl -sS \
+    -H "X-Api-Key: $key" \
+    -H "Content-Type: application/json" \
+    -X POST \
+    -d "{\"path\":\"$path\"}" \
+    "$url/api/v3/rootfolder" || true)"
+
+  if echo "$RESP" | grep -qi "error\|exception\|validation"; then
+    warn "$app root folder ekleme cevabı: $RESP"
+  else
+    ok "$app root folder eklendi: $path"
+  fi
+}
+
+add_root_folder "Sonarr" "$SONARR_URL" "$SONARR_KEY" "/series"
+add_root_folder "Radarr" "$RADARR_URL" "$RADARR_KEY" "/movies"
 
 if [[ -n "${SONARR_KEY:-}" ]]; then
   curl -fsS \
