@@ -217,7 +217,7 @@ echo "🛠 qBittorrent config güvenlik ayarları yazılıyor..."
 python3 - <<PY
 from pathlib import Path
 
-conf = Path("$QBIT_CONF")
+conf = Path("/home/bacmaster/docker/arr/qbittorrent/qBittorrent/qBittorrent.conf")
 conf.parent.mkdir(parents=True, exist_ok=True)
 
 text = conf.read_text() if conf.exists() else ""
