@@ -107,7 +107,7 @@ ARR_ADMIN_PASS="$ARR_ADMIN_PASS"
 
 ARR_DIR="/home/bacmaster/docker/arr"
 
-QBIT_URL="http://127.0.0.1:8080"
+QBIT_URL="http://192.168.50.102:8080"
 SONARR_URL="http://127.0.0.1:8989"
 RADARR_URL="http://127.0.0.1:7878"
 PROWLARR_URL="http://127.0.0.1:9696"
