@@ -107,6 +107,8 @@ fi
 if ! done_step "truenas_datasets"; then
   echo "🧊 TrueNAS dataset/NFS hazırlanıyor..."
 
+  echo "👤 TrueNAS media user hazırlanıyor..."
+
   tn_post "user" "{
     \"username\": \"${MEDIA_USER}\",
     \"full_name\": \"Media User\",
@@ -116,12 +118,14 @@ if ! done_step "truenas_datasets"; then
     \"smb\": false
   }" >/dev/null || true
 
+  echo "📦 Ana datasetler oluşturuluyor..."
+
+  # DİKKAT:
+  # tank/media altındaki downloads/movies/series/music dataset OLMAYACAK.
+  # Bunlar normal klasör olacak.
+  # Sebep: Alt datasetler ACL inheritance/write problemi çıkarıyor.
   for ds in \
     "tank/media" \
-    "tank/media/downloads" \
-    "tank/media/movies" \
-    "tank/media/series" \
-    "tank/media/music" \
     "tank/photos" \
     "tank/temp" \
     "private/documents" \
@@ -130,6 +134,17 @@ if ! done_step "truenas_datasets"; then
   do
     tn_post "pool/dataset" "{\"name\": \"${ds}\", \"share_type\": \"GENERIC\"}" >/dev/null || true
   done
+
+  echo "📁 Media alt klasörleri normal klasör olarak oluşturuluyor..."
+
+  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/downloads\"}" >/dev/null || true
+  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/downloads/torrents\"}" >/dev/null || true
+  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/downloads/usenet\"}" >/dev/null || true
+  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/downloads/sonarr\"}" >/dev/null || true
+  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/downloads/radarr\"}" >/dev/null || true
+  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/movies\"}" >/dev/null || true
+  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/series\"}" >/dev/null || true
+  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/music\"}" >/dev/null || true
 
   echo "🔐 Dataset ownership/ACL hazırlanıyor..."
 
