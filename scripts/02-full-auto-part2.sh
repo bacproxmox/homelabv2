@@ -63,11 +63,14 @@ source "$PART2_ENV"
 TN_API="http://${TRUENAS_IP}/api/v2.0"
 
 tn_get() {
-  curl -sk -H "Authorization: Bearer ${TRUENAS_API_KEY}" "$TN_API/$1"
+  curl -sk --connect-timeout 10 --max-time 30 \
+    -H "Authorization: Bearer ${TRUENAS_API_KEY}" \
+    "$TN_API/$1"
 }
 
 tn_post() {
-  curl -sk -X POST \
+  curl -sk --connect-timeout 10 --max-time 30 \
+    -X POST \
     -H "Authorization: Bearer ${TRUENAS_API_KEY}" \
     -H "Content-Type: application/json" \
     -d "$2" \
@@ -75,10 +78,18 @@ tn_post() {
 }
 
 tn_put() {
-  curl -sk -X PUT \
+  curl -sk --connect-timeout 10 --max-time 30 \
+    -X PUT \
     -H "Authorization: Bearer ${TRUENAS_API_KEY}" \
     -H "Content-Type: application/json" \
     -d "$2" \
+    "$TN_API/$1"
+}
+
+tn_delete() {
+  curl -sk --connect-timeout 10 --max-time 30 \
+    -X DELETE \
+    -H "Authorization: Bearer ${TRUENAS_API_KEY}" \
     "$TN_API/$1"
 }
 
@@ -87,7 +98,10 @@ if ! done_step "truenas_api"; then
 
   tn_get "system/info" >/tmp/truenas-info.json || {
     echo "❌ TrueNAS API erişimi başarısız."
-    echo "rm -f $PART2_ENV ile API key'i sıfırlayabilirsin."
+    echo "Düzeltmek için:"
+    echo "rm -f $PART2_ENV"
+    echo "bash install.sh"
+    echo "seçim: 2"
     exit 1
   }
 
@@ -120,10 +134,9 @@ if ! done_step "truenas_datasets"; then
 
   echo "📦 Ana datasetler oluşturuluyor..."
 
-  # DİKKAT:
-  # tank/media altındaki downloads/movies/series/music dataset OLMAYACAK.
+  # ÖNEMLİ:
+  # tank/media altındaki downloads/movies/series/music DATASET OLMAYACAK.
   # Bunlar normal klasör olacak.
-  # Sebep: Alt datasetler ACL inheritance/write problemi çıkarıyor.
   for ds in \
     "tank/media" \
     "tank/photos" \
@@ -137,14 +150,18 @@ if ! done_step "truenas_datasets"; then
 
   echo "📁 Media alt klasörleri normal klasör olarak oluşturuluyor..."
 
-  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/downloads\"}" >/dev/null || true
-  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/downloads/torrents\"}" >/dev/null || true
-  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/downloads/usenet\"}" >/dev/null || true
-  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/downloads/sonarr\"}" >/dev/null || true
-  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/downloads/radarr\"}" >/dev/null || true
-  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/movies\"}" >/dev/null || true
-  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/series\"}" >/dev/null || true
-  tn_post "filesystem/mkdir" "{\"path\": \"/mnt/tank/media/music\"}" >/dev/null || true
+  for folder in \
+    "/mnt/tank/media/downloads" \
+    "/mnt/tank/media/downloads/torrents" \
+    "/mnt/tank/media/downloads/usenet" \
+    "/mnt/tank/media/downloads/sonarr" \
+    "/mnt/tank/media/downloads/radarr" \
+    "/mnt/tank/media/movies" \
+    "/mnt/tank/media/series" \
+    "/mnt/tank/media/music"
+  do
+    tn_post "filesystem/mkdir" "{\"path\": \"${folder}\"}" >/dev/null || true
+  done
 
   echo "🔐 Dataset ownership/ACL hazırlanıyor..."
 
@@ -160,10 +177,23 @@ if ! done_step "truenas_datasets"; then
 
   echo "📡 NFS share oluşturuluyor/güncelleniyor..."
 
-  EXISTING_NFS_ID="$(tn_get "sharing/nfs" | grep -oE '"id":[0-9]+|"paths":\["/mnt/tank/media"\]' | awk '
-    /"id":/ {id=$0; gsub(/[^0-9]/,"",id)}
-    /"paths":/ {print id}
-  ' | head -n1)"
+  tn_get "sharing/nfs" >/tmp/truenas-nfs.json || echo "[]" >/tmp/truenas-nfs.json
+
+  EXISTING_NFS_ID="$(python3 - <<'PY'
+import json
+from pathlib import Path
+
+data = json.loads(Path("/tmp/truenas-nfs.json").read_text() or "[]")
+target = "/mnt/tank/media"
+
+for item in data:
+    paths = item.get("paths") or []
+    path = item.get("path")
+    if target in paths or path == target:
+        print(item.get("id", ""))
+        break
+PY
+)"
 
   NFS_PAYLOAD="{
     \"paths\": [\"/mnt/tank/media\"],
@@ -176,10 +206,14 @@ if ! done_step "truenas_datasets"; then
   }"
 
   if [[ -n "${EXISTING_NFS_ID:-}" ]]; then
-    tn_put "sharing/nfs/id/${EXISTING_NFS_ID}" "$NFS_PAYLOAD" >/dev/null || true
+    echo "🔁 Mevcut NFS share güncelleniyor: ID ${EXISTING_NFS_ID}"
+    tn_put "sharing/nfs/id/${EXISTING_NFS_ID}" "$NFS_PAYLOAD" >/tmp/truenas-nfs-update.json || true
   else
-    tn_post "sharing/nfs" "$NFS_PAYLOAD" >/dev/null || true
+    echo "➕ Yeni NFS share oluşturuluyor"
+    tn_post "sharing/nfs" "$NFS_PAYLOAD" >/tmp/truenas-nfs-create.json || true
   fi
+
+  echo "🔧 NFS servisi aktif ediliyor..."
 
   tn_put "service/id/nfs" "{\"enable\": true}" >/dev/null || true
   tn_post "service/start" "{\"service\": \"nfs\"}" >/dev/null || true
@@ -265,7 +299,6 @@ add_vm106_igpu_passthrough() {
     return 0
   fi
 
-  # Jellyfin/Immich hardware acceleration için Primary GPU gerekmez.
   add_hostpci 106 0 "$igpu" "pcie=1,x-vga=0,rombar=1"
 }
 
@@ -285,11 +318,6 @@ add_vm107_chia_passthrough() {
 
     audio="$(lspci -Dnn | grep -Ei "${base}\.1.*NVIDIA.*Audio|${base}\.1.*High Definition Audio" | awk '{print $1}' | head -n1 || true)"
 
-    # Chia CUDA compute için Primary GPU gerekmez.
-    # Proxmox GUI karşılığı:
-    # PCI-Express: ON
-    # Primary GPU: OFF
-    # ROM-Bar: ON
     add_hostpci 107 "$idx" "$gpu" "pcie=1,x-vga=0,rombar=1"
     idx=$((idx + 1))
 
