@@ -225,6 +225,96 @@ create_iso_vm() {
   qm set "$ID" --boot order=ide2
 }
 
+find_pci_by_regex() {
+  local regex="$1"
+  lspci -Dnn | grep -Ei "$regex" | awk '{print $1}' | head -n1 || true
+}
+
+find_all_pci_by_regex() {
+  local regex="$1"
+  lspci -Dnn | grep -Ei "$regex" | awk '{print $1}' || true
+}
+
+pci_short() {
+  echo "$1" | sed 's/^0000://'
+}
+
+add_hostpci() {
+  local vmid="$1"
+  local index="$2"
+  local pci="$3"
+  local opts="$4"
+
+  [[ -n "$pci" ]] || return 0
+
+  pci="$(pci_short "$pci")"
+
+  echo "🎮 VM $vmid hostpci$index ekleniyor: $pci,$opts"
+  qm set "$vmid" -hostpci"$index" "$pci,$opts" || true
+}
+
+add_vm106_igpu_passthrough() {
+  local igpu
+
+  echo "🎬 VM106 Intel iGPU aranıyor..."
+
+  igpu="$(find_pci_by_regex 'Intel Corporation.*Raptor Lake.*UHD Graphics|Intel Corporation.*UHD Graphics|Intel Corporation.*VGA.*Raptor Lake|00:02.0.*Intel')"
+
+  if [[ -z "$igpu" ]]; then
+    echo "⚠️ Intel iGPU bulunamadı, VM106 passthrough atlandı"
+    return 0
+  fi
+
+  # Jellyfin/Immich hardware acceleration için Primary GPU gerekmez.
+  add_hostpci 106 0 "$igpu" "pcie=1,x-vga=0,rombar=1"
+}
+
+add_vm107_chia_passthrough() {
+  local gpu=""
+  local audio=""
+  local base=""
+  local idx=0
+  local sata_list=()
+
+  echo "🎮 VM107 RTX 3060 / NVIDIA GPU aranıyor..."
+
+  gpu="$(find_pci_by_regex 'NVIDIA.*RTX 3060|NVIDIA.*GA106.*RTX 3060|NVIDIA.*VGA|NVIDIA.*3D')"
+
+  if [[ -n "$gpu" ]]; then
+    base="$(echo "$gpu" | sed -E 's/\.[0-9]$//')"
+
+    audio="$(lspci -Dnn | grep -Ei "${base}\.1.*NVIDIA.*Audio|${base}\.1.*High Definition Audio" | awk '{print $1}' | head -n1 || true)"
+
+    # Chia CUDA compute için Primary GPU gerekmez.
+    # Proxmox GUI karşılığı:
+    # PCI-Express: ON
+    # Primary GPU: OFF
+    # ROM-Bar: ON
+    add_hostpci 107 "$idx" "$gpu" "pcie=1,x-vga=0,rombar=1"
+    idx=$((idx + 1))
+
+    if [[ -n "$audio" ]]; then
+      add_hostpci 107 "$idx" "$audio" "pcie=1,rombar=1"
+      idx=$((idx + 1))
+    fi
+  else
+    echo "⚠️ RTX 3060 / NVIDIA GPU bulunamadı, VM107 GPU passthrough atlandı"
+  fi
+
+  echo "🔎 VM107 için JMicron JMB58x AHCI SATA controller aranıyor..."
+
+  mapfile -t sata_list < <(find_all_pci_by_regex 'JMicron.*JMB58.*AHCI|JMicron.*AHCI SATA|JMB58x.*AHCI SATA|JMicron Technology.*JMB58.*SATA')
+
+  if [[ "${#sata_list[@]}" -eq 0 ]]; then
+    echo "⚠️ JMicron JMB58x SATA controller bulunamadı"
+  fi
+
+  for sata in "${sata_list[@]}"; do
+    add_hostpci 107 "$idx" "$sata" "pcie=1,rombar=1"
+    idx=$((idx + 1))
+  done
+}
+
 if ! done_step "vms"; then
   echo "🖥️ Ubuntu ISO VM'leri oluşturuluyor..."
 
@@ -235,6 +325,11 @@ if ! done_step "vms"; then
   create_iso_vm 106 docker-media   24576 6 128G
   create_iso_vm 107 chia-farmer    8192 4 64G
   create_iso_vm 110 backup-server  8192 4 64G
+
+  echo "🎮 GPU / SATA passthrough ayarları uygulanıyor..."
+
+  add_vm106_igpu_passthrough
+  add_vm107_chia_passthrough
 
   mark_step "vms"
   echo "✅ VM'ler hazır"
