@@ -625,15 +625,17 @@ healthcheck "Ollama"        "http://192.168.50.106:11434"
 healthcheck "Open WebUI"    "http://192.168.50.106:3000"
 
 echo
-echo "🖼 Immich özel healthcheck başlıyor..."
+echo "🖼 Immich kontrol ediliyor..."
 
-wait_for_url "Immich" "http://192.168.50.106:2283" 120 5 || {
-  echo
-  echo "⚠️ Immich hâlâ hazır görünmüyor."
-  echo "VM106 içinde:"
-  echo "cd ~/docker/media/immich"
-  echo "docker compose logs --tail=100 immich-server"
-}
+IMMICH_CODE="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 http://192.168.50.106:2283 || true)"
+
+if [[ "$IMMICH_CODE" =~ ^(200|301|302|307|308|401|403)$ ]]; then
+  echo "✅ Immich erişilebilir HTTP:$IMMICH_CODE"
+else
+  echo "⚠️ Immich şu an HTTP:$IMMICH_CODE döndü ama kurulum bloklanmayacak."
+  echo "Immich geç açılabiliyor. Web UI ayrıca manuel kontrol edilebilir:"
+  echo "http://192.168.50.106:2283"
+fi
 
 echo
 echo "📦 Mount kontrolü..."
