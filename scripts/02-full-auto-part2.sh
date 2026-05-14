@@ -147,107 +147,119 @@ if ! done_step "truenas_datasets"; then
 
   echo "🔐 Ownership/permission hazırlanıyor..."
 
-  tn_post "filesystem/chown" "{
-    \"path\": \"/mnt/tank/media\",
-    \"uid\": ${MEDIA_UID},
-    \"gid\": ${MEDIA_GID},
-    \"options\": {
-      \"recursive\": true,
-      \"traverse\": true
-    }
-  }" >/dev/null || true
+  for path in "/mnt/tank/media" "/mnt/private/photos"; do
+    tn_post "filesystem/chown" "{
+      \"path\": \"${path}\",
+      \"uid\": ${MEDIA_UID},
+      \"gid\": ${MEDIA_GID},
+      \"options\": {
+        \"recursive\": true,
+        \"traverse\": true
+      }
+    }" >/dev/null || true
 
-  tn_post "filesystem/setperm" "{
-    \"path\": \"/mnt/tank/media\",
-    \"mode\": \"775\",
-    \"uid\": ${MEDIA_UID},
-    \"gid\": ${MEDIA_GID},
-    \"options\": {
-      \"recursive\": true,
-      \"traverse\": true
-    }
-  }" >/dev/null || true
+    tn_post "filesystem/setperm" "{
+      \"path\": \"${path}\",
+      \"mode\": \"775\",
+      \"uid\": ${MEDIA_UID},
+      \"gid\": ${MEDIA_GID},
+      \"options\": {
+        \"recursive\": true,
+        \"traverse\": true
+      }
+    }" >/dev/null || true
+  done
 
-  echo "📡 NFS share oluşturuluyor/güncelleniyor..."
+  create_or_update_nfs_share() {
+    local path="$1"
+    local comment="$2"
 
-  tn_get "sharing/nfs" >/tmp/truenas-nfs.json || echo "[]" >/tmp/truenas-nfs.json
+    echo "📡 NFS share hazırlanıyor: $path"
 
-  EXISTING_NFS_ID="$(python3 - <<'PY'
-import json
+    tn_get "sharing/nfs" >/tmp/truenas-nfs.json || echo "[]" >/tmp/truenas-nfs.json
+
+    EXISTING_NFS_ID="$(TARGET_PATH="$path" python3 - <<'PY'
+import json, os
 from pathlib import Path
 
-target = "/mnt/tank/media"
+target = os.environ["TARGET_PATH"]
 data = json.loads(Path("/tmp/truenas-nfs.json").read_text() or "[]")
 
 for item in data:
     paths = item.get("paths") or []
-    path = item.get("path")
-    if target == path or target in paths:
+    single_path = item.get("path")
+    if target == single_path or target in paths:
         print(item.get("id", ""))
         break
 PY
 )"
 
-  NFS_PAYLOAD_PATHS="{
-    \"paths\": [\"/mnt/tank/media\"],
-    \"comment\": \"tank media NFS\",
-    \"enabled\": true,
-    \"networks\": [\"192.168.50.0/24\"],
-    \"mapall_user\": \"${MEDIA_USER}\",
-    \"mapall_group\": \"${MEDIA_USER}\",
-    \"ro\": false
-  }"
+    NFS_PAYLOAD_PATHS="{
+      \"paths\": [\"${path}\"],
+      \"comment\": \"${comment}\",
+      \"enabled\": true,
+      \"networks\": [\"192.168.50.0/24\"],
+      \"mapall_user\": \"${MEDIA_USER}\",
+      \"mapall_group\": \"${MEDIA_USER}\",
+      \"ro\": false
+    }"
 
-  NFS_PAYLOAD_PATH="{
-    \"path\": \"/mnt/tank/media\",
-    \"comment\": \"tank media NFS\",
-    \"enabled\": true,
-    \"networks\": [\"192.168.50.0/24\"],
-    \"mapall_user\": \"${MEDIA_USER}\",
-    \"mapall_group\": \"${MEDIA_USER}\",
-    \"ro\": false
-  }"
+    NFS_PAYLOAD_PATH="{
+      \"path\": \"${path}\",
+      \"comment\": \"${comment}\",
+      \"enabled\": true,
+      \"networks\": [\"192.168.50.0/24\"],
+      \"mapall_user\": \"${MEDIA_USER}\",
+      \"mapall_group\": \"${MEDIA_USER}\",
+      \"ro\": false
+    }"
 
-  if [[ -n "${EXISTING_NFS_ID:-}" ]]; then
-    echo "🔁 Mevcut NFS share güncelleniyor: ID $EXISTING_NFS_ID"
+    if [[ -n "${EXISTING_NFS_ID:-}" ]]; then
+      echo "🔁 Mevcut NFS share güncelleniyor: ID $EXISTING_NFS_ID / $path"
 
-    if ! tn_put "sharing/nfs/id/${EXISTING_NFS_ID}" "$NFS_PAYLOAD_PATHS" >/tmp/nfs-update.json; then
-      tn_put "sharing/nfs/id/${EXISTING_NFS_ID}" "$NFS_PAYLOAD_PATH" >/tmp/nfs-update.json || true
+      if ! tn_put "sharing/nfs/id/${EXISTING_NFS_ID}" "$NFS_PAYLOAD_PATHS" >/tmp/nfs-update.json; then
+        tn_put "sharing/nfs/id/${EXISTING_NFS_ID}" "$NFS_PAYLOAD_PATH" >/tmp/nfs-update.json || true
+      fi
+    else
+      echo "➕ Yeni NFS share oluşturuluyor: $path"
+
+      if ! tn_post "sharing/nfs" "$NFS_PAYLOAD_PATHS" >/tmp/nfs-create.json; then
+        tn_post "sharing/nfs" "$NFS_PAYLOAD_PATH" >/tmp/nfs-create.json || true
+      fi
     fi
-  else
-    echo "➕ Yeni NFS share oluşturuluyor"
+  }
 
-    if ! tn_post "sharing/nfs" "$NFS_PAYLOAD_PATHS" >/tmp/nfs-create.json; then
-      tn_post "sharing/nfs" "$NFS_PAYLOAD_PATH" >/tmp/nfs-create.json || true
-    fi
-  fi
+  create_or_update_nfs_share "/mnt/tank/media" "tank media NFS"
+  create_or_update_nfs_share "/mnt/private/photos" "private photos NFS for Immich"
 
   echo "🔎 NFS share doğrulanıyor..."
 
   tn_get "sharing/nfs" >/tmp/truenas-nfs-after.json || echo "[]" >/tmp/truenas-nfs-after.json
 
-  if python3 - <<'PY'
-import json, sys
+  for check_path in "/mnt/tank/media" "/mnt/private/photos"; do
+    if TARGET_PATH="$check_path" python3 - <<'PY'
+import json, os, sys
 from pathlib import Path
 
-target = "/mnt/tank/media"
+target = os.environ["TARGET_PATH"]
 data = json.loads(Path("/tmp/truenas-nfs-after.json").read_text() or "[]")
 
 for item in data:
     paths = item.get("paths") or []
-    path = item.get("path")
-    if target == path or target in paths:
+    single_path = item.get("path")
+    if target == single_path or target in paths:
         sys.exit(0)
 
 sys.exit(1)
 PY
-  then
-    echo "✅ NFS share doğrulandı: /mnt/tank/media"
-  else
-    echo "❌ NFS share doğrulanamadı. TrueNAS API response:"
-    cat /tmp/truenas-nfs-after.json
-    exit 1
-  fi
+    then
+      echo "✅ NFS share doğrulandı: $check_path"
+    else
+      echo "❌ NFS share doğrulanamadı: $check_path"
+      cat /tmp/truenas-nfs-after.json
+      exit 1
+    fi
+  done
 
   echo "🔧 NFS servisi aktif ediliyor..."
 
