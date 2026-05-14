@@ -84,6 +84,59 @@ tn_put() {
     "$TN_API/$1"
 }
 
+api_response_ok() {
+  local file="$1"
+
+  python3 - "$file" <<'PY'
+import json, sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+text = p.read_text(errors="ignore").strip()
+
+if not text:
+    sys.exit(1)
+
+try:
+    data = json.loads(text)
+except Exception:
+    # JSON değilse hata kabul et
+    sys.exit(1)
+
+def bad(x):
+    if isinstance(x, dict):
+        keys = {str(k).lower() for k in x.keys()}
+        if {"error", "errors", "exception", "trace", "errno", "errname"} & keys:
+            return True
+        if "errormessage" in keys or "message" in keys and "propertyname" in keys:
+            return True
+        return any(bad(v) for v in x.values())
+    if isinstance(x, list):
+        return any(bad(i) for i in x)
+    return False
+
+sys.exit(1 if bad(data) else 0)
+PY
+}
+
+tn_post_checked() {
+  local endpoint="$1"
+  local payload="$2"
+  local out="$3"
+
+  tn_post "$endpoint" "$payload" > "$out" || return 1
+  api_response_ok "$out"
+}
+
+tn_put_checked() {
+  local endpoint="$1"
+  local payload="$2"
+  local out="$3"
+
+  tn_put "$endpoint" "$payload" > "$out" || return 1
+  api_response_ok "$out"
+}
+
 if ! done_step "truenas_api"; then
   echo "🔍 TrueNAS API kontrol ediliyor..."
 
@@ -170,15 +223,22 @@ if ! done_step "truenas_datasets"; then
     }" >/dev/null || true
   done
 
+  echo "🔧 NFS servisi aktif ediliyor..."
+
+  tn_put "service/id/nfs" "{\"enable\":true}" >/dev/null || true
+  tn_post "service/start" "{\"service\":\"nfs\"}" >/dev/null || true
+  sleep 3
+
   create_or_update_nfs_share() {
-    local path="$1"
+    local share_path="$1"
     local comment="$2"
 
-    echo "📡 NFS share hazırlanıyor: $path"
+    echo "📡 NFS share hazırlanıyor: $share_path"
 
     tn_get "sharing/nfs" >/tmp/truenas-nfs.json || echo "[]" >/tmp/truenas-nfs.json
 
-    EXISTING_NFS_ID="$(TARGET_PATH="$path" python3 - <<'PY'
+    local existing_id
+    existing_id="$(TARGET_PATH="$share_path" python3 - <<'PY'
 import json, os
 from pathlib import Path
 
@@ -194,8 +254,11 @@ for item in data:
 PY
 )"
 
-    NFS_PAYLOAD_PATHS="{
-      \"paths\": [\"${path}\"],
+    local payload_paths
+    local payload_path
+
+    payload_paths="{
+      \"paths\": [\"${share_path}\"],
       \"comment\": \"${comment}\",
       \"enabled\": true,
       \"networks\": [\"192.168.50.0/24\"],
@@ -204,8 +267,8 @@ PY
       \"ro\": false
     }"
 
-    NFS_PAYLOAD_PATH="{
-      \"path\": \"${path}\",
+    payload_path="{
+      \"path\": \"${share_path}\",
       \"comment\": \"${comment}\",
       \"enabled\": true,
       \"networks\": [\"192.168.50.0/24\"],
@@ -214,17 +277,29 @@ PY
       \"ro\": false
     }"
 
-    if [[ -n "${EXISTING_NFS_ID:-}" ]]; then
-      echo "🔁 Mevcut NFS share güncelleniyor: ID $EXISTING_NFS_ID / $path"
+    if [[ -n "${existing_id:-}" ]]; then
+      echo "🔁 Mevcut NFS share güncelleniyor: ID $existing_id / $share_path"
 
-      if ! tn_put "sharing/nfs/id/${EXISTING_NFS_ID}" "$NFS_PAYLOAD_PATHS" >/tmp/nfs-update.json; then
-        tn_put "sharing/nfs/id/${EXISTING_NFS_ID}" "$NFS_PAYLOAD_PATH" >/tmp/nfs-update.json || true
+      if tn_put_checked "sharing/nfs/id/${existing_id}" "$payload_paths" "/tmp/nfs-update-${existing_id}.json"; then
+        echo "✅ NFS share güncellendi: $share_path"
+      elif tn_put_checked "sharing/nfs/id/${existing_id}" "$payload_path" "/tmp/nfs-update-${existing_id}.json"; then
+        echo "✅ NFS share güncellendi: $share_path"
+      else
+        echo "❌ NFS share güncellenemedi: $share_path"
+        cat "/tmp/nfs-update-${existing_id}.json" || true
+        exit 1
       fi
     else
-      echo "➕ Yeni NFS share oluşturuluyor: $path"
+      echo "➕ Yeni NFS share oluşturuluyor: $share_path"
 
-      if ! tn_post "sharing/nfs" "$NFS_PAYLOAD_PATHS" >/tmp/nfs-create.json; then
-        tn_post "sharing/nfs" "$NFS_PAYLOAD_PATH" >/tmp/nfs-create.json || true
+      if tn_post_checked "sharing/nfs" "$payload_paths" "/tmp/nfs-create.json"; then
+        echo "✅ NFS share oluşturuldu: $share_path"
+      elif tn_post_checked "sharing/nfs" "$payload_path" "/tmp/nfs-create.json"; then
+        echo "✅ NFS share oluşturuldu: $share_path"
+      else
+        echo "❌ NFS share oluşturulamadı: $share_path"
+        cat /tmp/nfs-create.json || true
+        exit 1
       fi
     fi
   }
@@ -232,12 +307,20 @@ PY
   create_or_update_nfs_share "/mnt/tank/media" "tank media NFS"
   create_or_update_nfs_share "/mnt/private/photos" "private photos NFS for Immich"
 
+  echo "🔄 NFS servisi yeniden başlatılıyor..."
+
+  tn_post "service/restart" "{\"service\":\"nfs\"}" >/dev/null || true
+  sleep 5
+
   echo "🔎 NFS share doğrulanıyor..."
 
-  tn_get "sharing/nfs" >/tmp/truenas-nfs-after.json || echo "[]" >/tmp/truenas-nfs-after.json
+  verify_nfs_share() {
+    local check_path="$1"
 
-  for check_path in "/mnt/tank/media" "/mnt/private/photos"; do
-    if TARGET_PATH="$check_path" python3 - <<'PY'
+    for i in {1..12}; do
+      tn_get "sharing/nfs" >/tmp/truenas-nfs-after.json || echo "[]" >/tmp/truenas-nfs-after.json
+
+      if TARGET_PATH="$check_path" python3 - <<'PY'
 import json, os, sys
 from pathlib import Path
 
@@ -252,20 +335,22 @@ for item in data:
 
 sys.exit(1)
 PY
-    then
-      echo "✅ NFS share doğrulandı: $check_path"
-    else
-      echo "❌ NFS share doğrulanamadı: $check_path"
-      cat /tmp/truenas-nfs-after.json
-      exit 1
-    fi
-  done
+      then
+        echo "✅ NFS share doğrulandı: $check_path"
+        return 0
+      fi
 
-  echo "🔧 NFS servisi aktif ediliyor..."
+      sleep 5
+    done
 
-  tn_put "service/id/nfs" "{\"enable\":true}" >/dev/null || true
-  tn_post "service/start" "{\"service\":\"nfs\"}" >/dev/null || true
-  tn_post "service/restart" "{\"service\":\"nfs\"}" >/dev/null || true
+    echo "❌ NFS share doğrulanamadı: $check_path"
+    echo "TrueNAS response:"
+    cat /tmp/truenas-nfs-after.json || true
+    return 1
+  }
+
+  verify_nfs_share "/mnt/tank/media"
+  verify_nfs_share "/mnt/private/photos"
 
   mark_step "truenas_datasets"
   echo "✅ TrueNAS dataset/NFS tamam"
