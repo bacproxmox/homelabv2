@@ -321,7 +321,7 @@ if ! step_done "truenas_vm"; then
 
   VMID="101"
   VMNAME="truenas"
-  ISO="local:iso/TrueNAS-SCALE-25.10.3.iso"
+  ISO="local:iso/TrueNAS-SCALE-25.10.3.1.iso"
 
   DISK_TANK="/dev/disk/by-id/ata-TOSHIBA_MG10ACA20TE_4580A0BSF4MJ"
   DISK_PRIVATE="/dev/disk/by-id/ata-ST4000NM0053_Z1Z5KNAT"
