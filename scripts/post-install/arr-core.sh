@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export ARR_DIR="${ARR_DIR:-/home/bacmaster/docker/arr}"
+
+export QBIT_URL="${QBIT_URL:-http://192.168.50.102:8080}"
+export SONARR_URL="${SONARR_URL:-http://192.168.50.102:8989}"
+export RADARR_URL="${RADARR_URL:-http://192.168.50.102:7878}"
+export PROWLARR_URL="${PROWLARR_URL:-http://192.168.50.102:9696}"
+export BAZARR_URL="${BAZARR_URL:-http://192.168.50.102:6767}"
+export FLARESOLVERR_URL="${FLARESOLVERR_URL:-http://192.168.50.103:8191}"
+
+export SONARR_CFG="${SONARR_CFG:-$ARR_DIR/sonarr/config.xml}"
+export RADARR_CFG="${RADARR_CFG:-$ARR_DIR/radarr/config.xml}"
+export PROWLARR_CFG="${PROWLARR_CFG:-$ARR_DIR/prowlarr/config.xml}"
+
 log() { echo; echo ">>> $1"; }
 ok() { echo "✅ $1"; }
 warn() { echo "⚠️ $1"; }
@@ -8,6 +21,7 @@ warn() { echo "⚠️ $1"; }
 get_xml_value() {
   local file="$1"
   local key="$2"
+  [[ -f "$file" ]] || return 0
   grep -oP "<${key}>\K.*(?=</${key}>)" "$file" | head -n1 || true
 }
 
@@ -65,8 +79,8 @@ for app in sonarr radarr prowlarr; do
   if [[ -f "$cfg" ]]; then
     set_xml_value "$cfg" "AuthenticationMethod" "Forms"
     set_xml_value "$cfg" "AuthenticationRequired" "Enabled"
-    set_xml_value "$cfg" "Username" "$ARR_ADMIN_USER"
-    set_xml_value "$cfg" "Password" "$ARR_ADMIN_PASS"
+    set_xml_value "$cfg" "Username" "${ARR_ADMIN_USER:-bacmaster}"
+    set_xml_value "$cfg" "Password" "${ARR_ADMIN_PASS:-Bac148090289121}"
     ok "$app auth config güncellendi"
   else
     warn "$app config bulunamadı: $cfg"
@@ -80,22 +94,23 @@ SONARR_KEY="$(get_xml_value "$SONARR_CFG" "ApiKey")"
 RADARR_KEY="$(get_xml_value "$RADARR_CFG" "ApiKey")"
 PROWLARR_KEY="$(get_xml_value "$PROWLARR_CFG" "ApiKey")"
 
-export SONARR_KEY RADARR_KEY PROWLARR_KEY
-
 echo
 echo "🔑 API key kontrolü:"
 [[ -n "$SONARR_KEY" ]] && ok "Sonarr API key bulundu" || warn "Sonarr API key yok"
 [[ -n "$RADARR_KEY" ]] && ok "Radarr API key bulundu" || warn "Radarr API key yok"
 [[ -n "$PROWLARR_KEY" ]] && ok "Prowlarr API key bulundu" || warn "Prowlarr API key yok"
 
+cat > /tmp/homelab-arr-keys.env <<EOF
+SONARR_KEY="$SONARR_KEY"
+RADARR_KEY="$RADARR_KEY"
+PROWLARR_KEY="$PROWLARR_KEY"
+EOF
+
 log "qBittorrent ayarlanıyor..."
 
-QBIT_CONF="/home/bacmaster/docker/arr/qbittorrent/qBittorrent/qBittorrent.conf"
+QBIT_CONF="$ARR_DIR/qbittorrent/qBittorrent/qBittorrent.conf"
 
-echo "🛑 qBittorrent durduruluyor..."
 docker stop qbittorrent >/dev/null 2>&1 || true
-
-echo "🛠 qBittorrent config yazılıyor..."
 
 python3 - <<'PY'
 from pathlib import Path
@@ -141,20 +156,19 @@ PY
 
 chown -R 1000:1000 "$ARR_DIR/qbittorrent" || true
 
-echo "▶️ qBittorrent başlatılıyor..."
 docker start qbittorrent >/dev/null 2>&1 || true
 sleep 20
 
 if curl -fsS --max-time 5 "$QBIT_URL/api/v2/app/version" >/dev/null 2>&1; then
   ok "qBittorrent API erişilebilir: $QBIT_URL"
 else
-  warn "qBittorrent API hâlâ erişimsiz olabilir: $QBIT_URL"
+  warn "qBittorrent API erişilemiyor: $QBIT_URL"
 fi
 
 QBIT_PREFS="$(cat <<EOF
 {
-  "web_ui_username": "$QBIT_USER",
-  "web_ui_password": "$QBIT_PASS",
+  "web_ui_username": "${QBIT_USER:-admin}",
+  "web_ui_password": "${QBIT_PASS:-Bac148090289121}",
   "save_path": "/downloads/",
   "temp_path_enabled": false,
   "create_subfolder_enabled": true
@@ -167,15 +181,8 @@ curl -fsS \
   --data-urlencode "json=$QBIT_PREFS" \
   "$QBIT_URL/api/v2/app/setPreferences" >/dev/null || warn "qBittorrent preferences basılamadı"
 
-curl -fsS \
-  --data-urlencode "category=sonarr" \
-  --data-urlencode "savePath=/downloads/sonarr" \
-  "$QBIT_URL/api/v2/torrents/createCategory" >/dev/null || true
-
-curl -fsS \
-  --data-urlencode "category=radarr" \
-  --data-urlencode "savePath=/downloads/radarr" \
-  "$QBIT_URL/api/v2/torrents/createCategory" >/dev/null || true
+curl -fsS --data-urlencode "category=sonarr" --data-urlencode "savePath=/downloads/sonarr" "$QBIT_URL/api/v2/torrents/createCategory" >/dev/null || true
+curl -fsS --data-urlencode "category=radarr" --data-urlencode "savePath=/downloads/radarr" "$QBIT_URL/api/v2/torrents/createCategory" >/dev/null || true
 
 docker restart qbittorrent >/dev/null 2>&1 || true
 sleep 12
@@ -212,39 +219,17 @@ add_root_folder() {
   if echo "$RESP" | grep -qi "error\|exception\|validation"; then
     warn "$app root folder ekleme cevabı: $RESP"
   else
-    ok "$app root folder eklendi: $path"
+    ok "$app root folder eklendi/denendi: $path"
   fi
 }
 
 add_root_folder "Sonarr" "$SONARR_URL" "$SONARR_KEY" "/series"
 add_root_folder "Radarr" "$RADARR_URL" "$RADARR_KEY" "/movies"
 
-if [[ -n "${SONARR_KEY:-}" ]]; then
-  curl -fsS \
-    -H "X-Api-Key: $SONARR_KEY" \
-    -H "Content-Type: application/json" \
-    -X POST \
-    -d '{"path":"/series"}' \
-    "$SONARR_URL/api/v3/rootfolder" >/dev/null 2>&1 || true
-
-  ok "Sonarr root folder denendi: /series"
-fi
-
-if [[ -n "${RADARR_KEY:-}" ]]; then
-  curl -fsS \
-    -H "X-Api-Key: $RADARR_KEY" \
-    -H "Content-Type: application/json" \
-    -X POST \
-    -d '{"path":"/movies"}' \
-    "$RADARR_URL/api/v3/rootfolder" >/dev/null 2>&1 || true
-
-  ok "Radarr root folder denendi: /movies"
-fi
-
 log "Sonarr/Radarr → qBittorrent bağlantısı kuruluyor..."
 
 add_qbit_to_sonarr() {
-  [[ -n "${SONARR_KEY:-}" ]] || return 0
+  [[ -n "$SONARR_KEY" ]] || return 0
 
   EXISTING="$(curl -fsS -H "X-Api-Key: $SONARR_KEY" "$SONARR_URL/api/v3/downloadclient" || true)"
 
@@ -268,8 +253,8 @@ add_qbit_to_sonarr() {
     { "name": "port", "value": 8080 },
     { "name": "useSsl", "value": false },
     { "name": "urlBase", "value": "" },
-    { "name": "username", "value": "$QBIT_USER" },
-    { "name": "password", "value": "$QBIT_PASS" },
+    { "name": "username", "value": "${QBIT_USER:-admin}" },
+    { "name": "password", "value": "${QBIT_PASS:-Bac148090289121}" },
     { "name": "category", "value": "sonarr" },
     { "name": "recentTvPriority", "value": 0 },
     { "name": "olderTvPriority", "value": 0 },
@@ -279,22 +264,18 @@ add_qbit_to_sonarr() {
 EOF
 )"
 
-  RESP="$(curl -sS \
+  curl -sS \
     -H "X-Api-Key: $SONARR_KEY" \
     -H "Content-Type: application/json" \
     -X POST \
     -d "$PAYLOAD" \
-    "$SONARR_URL/api/v3/downloadclient" || true)"
+    "$SONARR_URL/api/v3/downloadclient" >/dev/null || warn "Sonarr qBittorrent ekleme başarısız"
 
-  if echo "$RESP" | grep -qi "error\|invalid\|exception"; then
-    warn "Sonarr qBittorrent ekleme cevabı: $RESP"
-  else
-    ok "Sonarr qBittorrent bağlantısı denendi"
-  fi
+  ok "Sonarr qBittorrent bağlantısı denendi"
 }
 
 add_qbit_to_radarr() {
-  [[ -n "${RADARR_KEY:-}" ]] || return 0
+  [[ -n "$RADARR_KEY" ]] || return 0
 
   EXISTING="$(curl -fsS -H "X-Api-Key: $RADARR_KEY" "$RADARR_URL/api/v3/downloadclient" || true)"
 
@@ -318,8 +299,8 @@ add_qbit_to_radarr() {
     { "name": "port", "value": 8080 },
     { "name": "useSsl", "value": false },
     { "name": "urlBase", "value": "" },
-    { "name": "username", "value": "$QBIT_USER" },
-    { "name": "password", "value": "$QBIT_PASS" },
+    { "name": "username", "value": "${QBIT_USER:-admin}" },
+    { "name": "password", "value": "${QBIT_PASS:-Bac148090289121}" },
     { "name": "category", "value": "radarr" },
     { "name": "recentMoviePriority", "value": 0 },
     { "name": "olderMoviePriority", "value": 0 },
@@ -329,27 +310,17 @@ add_qbit_to_radarr() {
 EOF
 )"
 
-  RESP="$(curl -sS \
+  curl -sS \
     -H "X-Api-Key: $RADARR_KEY" \
     -H "Content-Type: application/json" \
     -X POST \
     -d "$PAYLOAD" \
-    "$RADARR_URL/api/v3/downloadclient" || true)"
+    "$RADARR_URL/api/v3/downloadclient" >/dev/null || warn "Radarr qBittorrent ekleme başarısız"
 
-  if echo "$RESP" | grep -qi "error\|invalid\|exception"; then
-    warn "Radarr qBittorrent ekleme cevabı: $RESP"
-  else
-    ok "Radarr qBittorrent bağlantısı denendi"
-  fi
+  ok "Radarr qBittorrent bağlantısı denendi"
 }
 
 add_qbit_to_sonarr
 add_qbit_to_radarr
-
-cat > /tmp/homelab-arr-keys.env <<EOF
-SONARR_KEY="$SONARR_KEY"
-RADARR_KEY="$RADARR_KEY"
-PROWLARR_KEY="$PROWLARR_KEY"
-EOF
 
 ok "ARR core tamam"
