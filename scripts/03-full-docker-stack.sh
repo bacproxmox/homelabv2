@@ -23,6 +23,9 @@ NEXTCLOUD_IP="192.168.50.104"
 HA_IP="192.168.50.105"
 MEDIA_IP="192.168.50.106"
 
+TRUENAS_NFS="192.168.50.101:/mnt/tank/media"
+MOUNT_POINT="/mnt/media"
+
 ask_visible_into() {
   local __var="$1"
   local prompt="$2"
@@ -60,15 +63,20 @@ source "$CF_ENV"
 apt update
 apt install -y sshpass curl
 
+SSH_OPTS=(
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+  -o PreferredAuthentications=password
+  -o PubkeyAuthentication=no
+  -o ConnectTimeout=5
+)
+
 wait_ssh() {
   local IP="$1"
 
   echo "⏳ SSH bekleniyor: $IP"
 
-  until sshpass -p "$SSH_PASS" ssh \
-    -o StrictHostKeyChecking=no \
-    -o ConnectTimeout=5 \
-    "$SSH_USER@$IP" "echo ok" >/dev/null 2>&1; do
+  until sshpass -p "$SSH_PASS" ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "echo ok" >/dev/null 2>&1; do
     sleep 5
   done
 
@@ -81,10 +89,39 @@ run_remote() {
   {
     printf '%s\n' "$SSH_PASS"
     cat
-  } | sshpass -p "$SSH_PASS" ssh \
-    -o StrictHostKeyChecking=no \
-    "$SSH_USER@$IP" \
-    "sudo -S -p '' bash -s"
+  } | sshpass -p "$SSH_PASS" ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "sudo -S -p '' bash -s"
+}
+
+healthcheck() {
+  local name="$1"
+  local url="$2"
+
+  if curl -fsS --max-time 5 "$url" >/dev/null 2>&1; then
+    echo "✅ $name : $url"
+  else
+    echo "❌ $name : $url"
+  fi
+}
+
+wait_for_url() {
+  local name="$1"
+  local url="$2"
+  local retries="${3:-60}"
+  local sleep_time="${4:-5}"
+
+  echo "⏳ $name bekleniyor: $url"
+
+  for i in $(seq 1 "$retries"); do
+    if curl -fsS --max-time 10 "$url" >/dev/null 2>&1; then
+      echo "✅ $name hazır: $url"
+      return 0
+    fi
+
+    sleep "$sleep_time"
+  done
+
+  echo "❌ $name hazır olmadı: $url"
+  return 1
 }
 
 echo "🔎 SSH erişimleri kontrol ediliyor..."
@@ -95,118 +132,116 @@ done
 
 prepare_vm() {
   local IP="$1"
+  local NEED_NFS="${2:-yes}"
+  local STACK_DIR="${3:-}"
 
   echo "🐳 Docker/NFS hazırlığı: $IP"
 
-  run_remote "$IP" <<'EOS'
+  run_remote "$IP" <<EOS
 set -e
 
+export DEBIAN_FRONTEND=noninteractive
+
 apt update
-apt install -y curl wget nano htop git ca-certificates nfs-common
+apt install -y curl wget nano htop git ca-certificates nfs-common jq
 
 if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | sh
 fi
 
-mkdir -p /mnt/media
-
-grep -q "192.168.50.101:/mnt/tank/media" /etc/fstab || \
-echo '192.168.50.101:/mnt/tank/media /mnt/media nfs defaults,_netdev,x-systemd.automount,noatime,nofail 0 0' >> /etc/fstab
-
 mkdir -p /etc/systemd/system/docker.service.d
 
-cat > /etc/systemd/system/docker.service.d/override.conf <<'EOF'
+cat > /etc/systemd/system/docker.service.d/override.conf <<'UNIT'
 [Unit]
 After=network-online.target remote-fs.target
 Wants=network-online.target remote-fs.target
-EOF
+UNIT
 
-cat > /usr/local/sbin/homelab-recover-stack.sh <<'EOF'
+systemctl daemon-reload
+systemctl enable docker
+
+mkdir -p "$MOUNT_POINT"
+
+if [[ "$NEED_NFS" == "yes" ]]; then
+  grep -q "$TRUENAS_NFS" /etc/fstab || echo '$TRUENAS_NFS $MOUNT_POINT nfs defaults,_netdev,x-systemd.automount,x-systemd.requires=network-online.target,noatime,nofail 0 0' >> /etc/fstab
+  systemctl daemon-reload
+  mount -a || true
+fi
+
+mkdir -p /home/$SSH_USER/docker
+chown -R $SSH_USER:$SSH_USER /home/$SSH_USER/docker
+usermod -aG docker $SSH_USER || true
+
+cat > /usr/local/sbin/homelab-recover-stack.sh <<'RECOVER'
 #!/usr/bin/env bash
 set -euo pipefail
 
-mount -a || true
+STACK_DIR="\${1:-}"
+NEED_NFS="\${2:-yes}"
 
-for i in {1..20}; do
-  if mountpoint -q /mnt/media || [[ ! -f /etc/homelab-needs-media ]]; then
-    break
-  fi
-  sleep 3
-  mount -a || true
-done
-
-if [[ -f /etc/homelab-stack-dirs ]]; then
-  while read -r dir; do
-    [[ -z "$dir" ]] && continue
-    [[ -d "$dir" ]] || continue
-    cd "$dir"
-    docker compose up -d || true
-  done < /etc/homelab-stack-dirs
+if [[ "\$NEED_NFS" == "yes" ]]; then
+  for i in {1..30}; do
+    mountpoint -q /mnt/media && break
+    mount -a || true
+    sleep 5
+  done
 fi
-EOF
+
+if [[ -n "\$STACK_DIR" && -f "\$STACK_DIR/docker-compose.yml" ]]; then
+  cd "\$STACK_DIR"
+  docker compose up -d || true
+fi
+RECOVER
 
 chmod +x /usr/local/sbin/homelab-recover-stack.sh
 
-cat > /etc/systemd/system/homelab-recover-stack.service <<'EOF'
+cat > /etc/systemd/system/homelab-recover-stack.service <<SERVICE
 [Unit]
-Description=HomeLab Docker stack recovery after NFS/network
+Description=HomeLab Docker stack recovery after network/NFS
 After=network-online.target remote-fs.target docker.service
 Wants=network-online.target remote-fs.target docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/homelab-recover-stack.sh
+ExecStart=/usr/local/sbin/homelab-recover-stack.sh "$STACK_DIR" "$NEED_NFS"
 RemainAfterExit=no
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SERVICE
 
 systemctl daemon-reload
-systemctl enable docker || true
-systemctl enable homelab-recover-stack.service || true
-
-mount -a || true
-
-mkdir -p /home/bacmaster/docker
-chown -R bacmaster:bacmaster /home/bacmaster/docker
-
-usermod -aG docker bacmaster || true
-EOS
-}
-
-register_stack_remote() {
-  local IP="$1"
-  local DIR="$2"
-  local NEEDS_MEDIA="${3:-yes}"
-
-  run_remote "$IP" <<EOS
-set -e
-touch /etc/homelab-stack-dirs
-grep -qxF "$DIR" /etc/homelab-stack-dirs || echo "$DIR" >> /etc/homelab-stack-dirs
-if [[ "$NEEDS_MEDIA" == "yes" ]]; then
-  touch /etc/homelab-needs-media
-fi
-systemctl daemon-reload
-systemctl enable homelab-recover-stack.service || true
+systemctl enable homelab-recover-stack.service
 EOS
 }
 
 echo "🐳 Docker/NFS hazırlığı yapılıyor..."
 
-for IP in "$ARR_IP" "$NET_IP" "$NEXTCLOUD_IP" "$HA_IP" "$MEDIA_IP"; do
-  prepare_vm "$IP"
-done
+prepare_vm "$ARR_IP" yes "/home/$SSH_USER/docker/arr"
+prepare_vm "$NET_IP" no "/home/$SSH_USER/docker/network"
+prepare_vm "$NEXTCLOUD_IP" no "/home/$SSH_USER/docker/nextcloud"
+prepare_vm "$HA_IP" no "/home/$SSH_USER/docker/homeassistant"
+prepare_vm "$MEDIA_IP" yes "/home/$SSH_USER/docker/media"
 
 echo "🎬 VM102 docker-arr stack kuruluyor..."
 
 run_remote "$ARR_IP" <<'EOS'
 set -e
 
-mkdir -p /home/bacmaster/docker/arr/{qbittorrent,prowlarr,sonarr,radarr,bazarr,jellyseerr,recyclarr}
-mkdir -p /mnt/media/downloads /mnt/media/movies /mnt/media/series /mnt/media/music
+USER_HOME="/home/bacmaster"
 
-cat > /home/bacmaster/docker/arr/docker-compose.yml <<'YAML'
+mkdir -p "$USER_HOME/docker/arr"/{qbittorrent,prowlarr,sonarr,radarr,bazarr,jellyseerr,recyclarr}
+
+mkdir -p /mnt/media/downloads
+mkdir -p /mnt/media/downloads/torrents
+mkdir -p /mnt/media/downloads/usenet
+mkdir -p /mnt/media/downloads/sonarr
+mkdir -p /mnt/media/downloads/radarr
+mkdir -p /mnt/media/movies
+mkdir -p /mnt/media/series
+mkdir -p /mnt/media/music
+
+cat > "$USER_HOME/docker/arr/docker-compose.yml" <<'YAML'
 services:
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:latest
@@ -216,6 +251,7 @@ services:
       - PGID=1000
       - TZ=Europe/Istanbul
       - WEBUI_PORT=8080
+      - TORRENTING_PORT=6881
     volumes:
       - ./qbittorrent:/config
       - /mnt/media/downloads:/downloads
@@ -304,25 +340,28 @@ services:
     restart: unless-stopped
 YAML
 
-chown -R bacmaster:bacmaster /home/bacmaster/docker/arr
-cd /home/bacmaster/docker/arr
-docker compose up -d || true
-EOS
+chown -R bacmaster:bacmaster "$USER_HOME/docker/arr"
 
-register_stack_remote "$ARR_IP" "/home/bacmaster/docker/arr" "yes"
+mount -a || true
+
+cd "$USER_HOME/docker/arr"
+docker compose up -d
+EOS
 
 echo "🌐 VM103 docker-network stack kuruluyor..."
 
 run_remote "$NET_IP" <<EOS
 set -e
 
-mkdir -p /home/bacmaster/docker/network/{adguard,uptime-kuma,flaresolverr,cloudflared}
+USER_HOME="/home/bacmaster"
 
-cat > /home/bacmaster/docker/network/.env <<ENV
+mkdir -p "\$USER_HOME/docker/network"/{adguard,uptime-kuma,flaresolverr,cloudflared}
+
+cat > "\$USER_HOME/docker/network/.env" <<ENV
 CLOUDFLARED_TOKEN=${CLOUDFLARED_TOKEN}
 ENV
 
-cat > /home/bacmaster/docker/network/docker-compose.yml <<'YAML'
+cat > "\$USER_HOME/docker/network/docker-compose.yml" <<'YAML'
 services:
   adguard:
     image: adguard/adguardhome:latest
@@ -357,25 +396,26 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
-    command: tunnel --no-autoupdate run --token \${CLOUDFLARED_TOKEN}
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
     restart: unless-stopped
 YAML
 
-chown -R bacmaster:bacmaster /home/bacmaster/docker/network
-cd /home/bacmaster/docker/network
-docker compose up -d || true
-EOS
+chown -R bacmaster:bacmaster "\$USER_HOME/docker/network"
 
-register_stack_remote "$NET_IP" "/home/bacmaster/docker/network" "no"
+cd "\$USER_HOME/docker/network"
+docker compose up -d
+EOS
 
 echo "☁️ VM104 nextcloud stack kuruluyor..."
 
 run_remote "$NEXTCLOUD_IP" <<'EOS'
 set -e
 
-mkdir -p /home/bacmaster/docker/nextcloud/{nextcloud,db,redis}
+USER_HOME="/home/bacmaster"
 
-cat > /home/bacmaster/docker/nextcloud/docker-compose.yml <<'YAML'
+mkdir -p "$USER_HOME/docker/nextcloud"/{nextcloud,db,redis}
+
+cat > "$USER_HOME/docker/nextcloud/docker-compose.yml" <<'YAML'
 services:
   nextcloud-db:
     image: mariadb:11
@@ -416,21 +456,22 @@ services:
     restart: unless-stopped
 YAML
 
-chown -R bacmaster:bacmaster /home/bacmaster/docker/nextcloud
-cd /home/bacmaster/docker/nextcloud
-docker compose up -d || true
-EOS
+chown -R bacmaster:bacmaster "$USER_HOME/docker/nextcloud"
 
-register_stack_remote "$NEXTCLOUD_IP" "/home/bacmaster/docker/nextcloud" "no"
+cd "$USER_HOME/docker/nextcloud"
+docker compose up -d
+EOS
 
 echo "🏠 VM105 Home Assistant stack kuruluyor..."
 
 run_remote "$HA_IP" <<'EOS'
 set -e
 
-mkdir -p /home/bacmaster/docker/homeassistant/config
+USER_HOME="/home/bacmaster"
 
-cat > /home/bacmaster/docker/homeassistant/docker-compose.yml <<'YAML'
+mkdir -p "$USER_HOME/docker/homeassistant/config"
+
+cat > "$USER_HOME/docker/homeassistant/docker-compose.yml" <<'YAML'
 services:
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:stable
@@ -445,21 +486,22 @@ services:
     restart: unless-stopped
 YAML
 
-chown -R bacmaster:bacmaster /home/bacmaster/docker/homeassistant
-cd /home/bacmaster/docker/homeassistant
-docker compose up -d || true
-EOS
+chown -R bacmaster:bacmaster "$USER_HOME/docker/homeassistant"
 
-register_stack_remote "$HA_IP" "/home/bacmaster/docker/homeassistant" "no"
+cd "$USER_HOME/docker/homeassistant"
+docker compose up -d
+EOS
 
 echo "🎞️ VM106 media stack kuruluyor..."
 
 run_remote "$MEDIA_IP" <<'EOS'
 set -e
 
-mkdir -p /home/bacmaster/docker/media/{jellyfin,ollama,open-webui,immich}
+USER_HOME="/home/bacmaster"
 
-cat > /home/bacmaster/docker/media/docker-compose.yml <<'YAML'
+mkdir -p "$USER_HOME/docker/media"/{jellyfin,ollama,open-webui,immich}
+
+cat > "$USER_HOME/docker/media/docker-compose.yml" <<'YAML'
 services:
   jellyfin:
     image: lscr.io/linuxserver/jellyfin:latest
@@ -468,6 +510,10 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=Europe/Istanbul
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "video"
     volumes:
       - ./jellyfin:/config
       - /mnt/media:/media
@@ -499,38 +545,31 @@ services:
     restart: unless-stopped
 YAML
 
-cd /home/bacmaster/docker/media/immich
+cd "$USER_HOME/docker/media/immich"
 
 if [[ ! -f docker-compose.yml ]]; then
   curl -L https://github.com/immich-app/immich/releases/latest/download/docker-compose.yml -o docker-compose.yml
   curl -L https://github.com/immich-app/immich/releases/latest/download/example.env -o .env
+
   sed -i 's|UPLOAD_LOCATION=.*|UPLOAD_LOCATION=./library|' .env || true
   sed -i 's|DB_PASSWORD=.*|DB_PASSWORD=passkey1|' .env || true
   sed -i 's|TZ=.*|TZ=Europe/Istanbul|' .env || true
 fi
 
-chown -R bacmaster:bacmaster /home/bacmaster/docker/media
+chown -R bacmaster:bacmaster "$USER_HOME/docker/media"
 
-cd /home/bacmaster/docker/media
+mount -a || true
+
+cd "$USER_HOME/docker/media"
 docker compose up -d || true
 
-cd /home/bacmaster/docker/media/immich
+cd "$USER_HOME/docker/media/immich"
 docker compose up -d || true
 EOS
 
-register_stack_remote "$MEDIA_IP" "/home/bacmaster/docker/media" "yes"
-register_stack_remote "$MEDIA_IP" "/home/bacmaster/docker/media/immich" "yes"
-
-healthcheck() {
-  local name="$1"
-  local url="$2"
-
-  if curl -fsS --max-time 5 "$url" >/dev/null 2>&1; then
-    echo "✅ $name : $url"
-  else
-    echo "❌ $name : $url"
-  fi
-}
+echo
+echo "⏳ Servislerin oturması için kısa bekleme..."
+sleep 10
 
 echo
 echo "🔍 Healthcheck başlıyor..."
@@ -550,8 +589,20 @@ healthcheck "HomeAssistant" "http://192.168.50.105:8123"
 healthcheck "Jellyfin"      "http://192.168.50.106:8096"
 healthcheck "Ollama"        "http://192.168.50.106:11434"
 healthcheck "Open WebUI"    "http://192.168.50.106:3000"
-healthcheck "Immich"        "http://192.168.50.106:2283"
+
+echo
+echo "🖼 Immich özel healthcheck başlıyor..."
+echo "İlk kurulumda Immich geç açıldığı için 10 dakikaya kadar beklenir."
+
+wait_for_url "Immich" "http://192.168.50.106:2283/api/server-info/ping" 120 5 || {
+  echo
+  echo "⚠️ Immich hâlâ hazır görünmüyor."
+  echo "VM106 içinde kontrol:"
+  echo "ssh bacmaster@192.168.50.106"
+  echo "cd /home/bacmaster/docker/media/immich"
+  echo "docker compose ps"
+  echo "docker compose logs --tail=100 immich-server"
+}
 
 echo
 echo "✅ PART3 Docker stack tamamlandı."
-echo
