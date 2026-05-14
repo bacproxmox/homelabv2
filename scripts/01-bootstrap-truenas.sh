@@ -224,7 +224,7 @@ if ! step_done "isos"; then
   mkdir -p /var/lib/vz/template/iso
   cd /var/lib/vz/template/iso
 
-  wget -nc https://download.sys.truenas.net/TrueNAS-SCALE-Goldeye/25.10.3/TrueNAS-SCALE-25.10.3.iso
+  wget -nc https://download.sys.truenas.net/TrueNAS-SCALE-Goldeye/25.10.3.1/TrueNAS-SCALE-25.10.3.1.iso
   wget -nc https://releases.ubuntu.com/26.04/ubuntu-26.04-live-server-amd64.iso || true
 
   mark_done "isos"
