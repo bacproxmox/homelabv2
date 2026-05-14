@@ -6,6 +6,11 @@ export SONARR_URL="${SONARR_URL:-http://192.168.50.102:8989}"
 export RADARR_URL="${RADARR_URL:-http://192.168.50.102:7878}"
 export FLARESOLVERR_URL="${FLARESOLVERR_URL:-http://192.168.50.103:8191/}"
 
+# Prowlarr Applications ekranında kullanılacak container içi URL'ler
+export PROWLARR_INTERNAL_URL="${PROWLARR_INTERNAL_URL:-http://prowlarr:9696}"
+export SONARR_INTERNAL_URL="${SONARR_INTERNAL_URL:-http://sonarr:8989}"
+export RADARR_INTERNAL_URL="${RADARR_INTERNAL_URL:-http://radarr:7878}"
+
 KEYS_FILE="/tmp/homelab-arr-keys.env"
 
 log() { echo; echo ">>> $1"; }
@@ -20,9 +25,7 @@ if [[ -z "${PROWLARR_KEY:-}" ]]; then
 fi
 
 api_get() {
-  curl -fsS \
-    -H "X-Api-Key: $PROWLARR_KEY" \
-    "$PROWLARR_URL$1"
+  curl -fsS -H "X-Api-Key: $PROWLARR_KEY" "$PROWLARR_URL$1"
 }
 
 api_post() {
@@ -30,15 +33,6 @@ api_post() {
     -H "X-Api-Key: $PROWLARR_KEY" \
     -H "Content-Type: application/json" \
     -X POST \
-    -d "$2" \
-    "$PROWLARR_URL$1"
-}
-
-api_put() {
-  curl -fsS \
-    -H "X-Api-Key: $PROWLARR_KEY" \
-    -H "Content-Type: application/json" \
-    -X PUT \
     -d "$2" \
     "$PROWLARR_URL$1"
 }
@@ -77,7 +71,6 @@ get_or_create_tag() {
   fi
 
   tag_id="$(api_post "/api/v1/tag" "{\"label\":\"${label}\"}" | jq -r '.id // empty' || true)"
-
   echo "$tag_id"
 }
 
@@ -132,96 +125,6 @@ EOF
   fi
 }
 
-add_public_indexer_from_schema() {
-  local wanted="$1"
-
-  log "Prowlarr indexer ekleniyor/deneniyor: $wanted"
-
-  local existing
-  existing="$(api_get "/api/v1/indexer" | jq -r --arg wanted "$wanted" '.[] | select((.name|ascii_downcase)==($wanted|ascii_downcase)) | .id' | head -n1 || true)"
-
-  if [[ -n "$existing" && "$existing" != "null" ]]; then
-    ok "$wanted indexer zaten var"
-    return 0
-  fi
-
-  api_get "/api/v1/indexer/schema" >/tmp/prowlarr-indexer-schema.json || {
-    warn "Indexer schema alınamadı"
-    return 0
-  }
-
-  TARGET="$wanted" TAG_ID="${TAG_ID:-}" python3 - <<'PY' >/tmp/prowlarr-indexer-payload.json
-import json, os, sys
-from pathlib import Path
-
-target = os.environ["TARGET"].lower()
-tag_id = os.environ.get("TAG_ID", "")
-
-schemas = json.loads(Path("/tmp/prowlarr-indexer-schema.json").read_text())
-
-chosen = None
-for s in schemas:
-    hay = " ".join(str(s.get(k, "")) for k in ["name", "implementation", "implementationName"]).lower()
-    if target in hay:
-        chosen = s
-        break
-
-if not chosen:
-    sys.exit(2)
-
-payload = dict(chosen)
-
-payload["name"] = chosen.get("name") or os.environ["TARGET"]
-payload["enable"] = True
-payload["enableRss"] = True
-payload["enableAutomaticSearch"] = True
-payload["enableInteractiveSearch"] = True
-payload["priority"] = 25
-payload["appProfileId"] = 1
-
-if tag_id and tag_id != "null":
-    payload["tags"] = [int(tag_id)]
-else:
-    payload["tags"] = []
-
-# Schema fields default value ile gelir; özel alan istemeyen public indexer'larda yeterli.
-payload["fields"] = payload.get("fields", [])
-
-print(json.dumps(payload))
-PY
-
-  if [[ ! -s /tmp/prowlarr-indexer-payload.json ]]; then
-    warn "$wanted için payload oluşturulamadı"
-    return 0
-  fi
-
-  if api_post "/api/v1/indexer" "$(cat /tmp/prowlarr-indexer-payload.json)" >/tmp/prowlarr-indexer-create.json 2>/tmp/prowlarr-indexer-create.err; then
-    ok "$wanted indexer eklendi/denendi"
-  else
-    warn "$wanted otomatik eklenemedi"
-    cat /tmp/prowlarr-indexer-create.json 2>/dev/null || true
-    cat /tmp/prowlarr-indexer-create.err 2>/dev/null || true
-  fi
-}
-
-add_default_indexers() {
-  log "Prowlarr default public indexer denemeleri başlıyor..."
-
-  # Bunlar public indexer olarak denenir. Cloudflare/ülke erişimi yüzünden bazıları fail olabilir.
-  add_public_indexer_from_schema "EZTV"
-  add_public_indexer_from_schema "The Pirate Bay"
-  add_public_indexer_from_schema "1337x"
-
-  local count
-  count="$(api_get "/api/v1/indexer" | jq 'length' 2>/dev/null || echo 0)"
-
-  if [[ "$count" -gt 0 ]]; then
-    ok "Prowlarr içinde indexer var. Sonarr/Radarr RSS/Search uyarıları sync sonrası gider."
-  else
-    warn "Prowlarr içinde hâlâ indexer yok. En az 1 indexer manuel eklenmeli."
-  fi
-}
-
 delete_existing_app_by_name() {
   local app_name="$1"
   local ids=""
@@ -252,11 +155,26 @@ add_sonarr_app() {
   "implementation": "Sonarr",
   "configContract": "SonarrSettings",
   "fields": [
-    { "name": "prowlarrUrl", "value": "${PROWLARR_URL}" },
-    { "name": "baseUrl", "value": "${SONARR_URL}" },
-    { "name": "apiKey", "value": "${SONARR_KEY}" },
-    { "name": "syncCategories", "value": [5000, 5010, 5020, 5030, 5040, 5045, 5050, 5060, 5070, 5080] },
-    { "name": "animeSyncCategories", "value": [5070] }
+    {
+      "name": "prowlarrUrl",
+      "value": "${PROWLARR_INTERNAL_URL}"
+    },
+    {
+      "name": "baseUrl",
+      "value": "${SONARR_INTERNAL_URL}"
+    },
+    {
+      "name": "apiKey",
+      "value": "${SONARR_KEY}"
+    },
+    {
+      "name": "syncCategories",
+      "value": [5000, 5010, 5020, 5030, 5040, 5045, 5050, 5060, 5070, 5080]
+    },
+    {
+      "name": "animeSyncCategories",
+      "value": [5070]
+    }
   ]
 }
 EOF
@@ -266,7 +184,9 @@ EOF
     ok "Prowlarr Sonarr app sync eklendi"
   else
     warn "Prowlarr Sonarr app eklenemedi"
+    echo "--- response ---"
     cat /tmp/prowlarr-sonarr-app.json 2>/dev/null || true
+    echo "--- error ---"
     cat /tmp/prowlarr-sonarr-app.err 2>/dev/null || true
   fi
 }
@@ -288,10 +208,22 @@ add_radarr_app() {
   "implementation": "Radarr",
   "configContract": "RadarrSettings",
   "fields": [
-    { "name": "prowlarrUrl", "value": "${PROWLARR_URL}" },
-    { "name": "baseUrl", "value": "${RADARR_URL}" },
-    { "name": "apiKey", "value": "${RADARR_KEY}" },
-    { "name": "syncCategories", "value": [2000, 2010, 2020, 2030, 2040, 2045, 2050, 2060, 2070, 2080] }
+    {
+      "name": "prowlarrUrl",
+      "value": "${PROWLARR_INTERNAL_URL}"
+    },
+    {
+      "name": "baseUrl",
+      "value": "${RADARR_INTERNAL_URL}"
+    },
+    {
+      "name": "apiKey",
+      "value": "${RADARR_KEY}"
+    },
+    {
+      "name": "syncCategories",
+      "value": [2000, 2010, 2020, 2030, 2040, 2045, 2050, 2060, 2070, 2080]
+    }
   ]
 }
 EOF
@@ -301,7 +233,9 @@ EOF
     ok "Prowlarr Radarr app sync eklendi"
   else
     warn "Prowlarr Radarr app eklenemedi"
+    echo "--- response ---"
     cat /tmp/prowlarr-radarr-app.json 2>/dev/null || true
+    echo "--- error ---"
     cat /tmp/prowlarr-radarr-app.err 2>/dev/null || true
   fi
 }
@@ -314,11 +248,29 @@ trigger_app_sync() {
   ok "Prowlarr sync komutu denendi"
 }
 
+verify_apps() {
+  log "Prowlarr Applications doğrulanıyor..."
+
+  APPS="$(api_get "/api/v1/applications" || echo "[]")"
+
+  if echo "$APPS" | jq -e '.[] | select(.name=="Sonarr")' >/dev/null 2>&1; then
+    ok "Sonarr application var"
+  else
+    warn "Sonarr application hâlâ yok"
+  fi
+
+  if echo "$APPS" | jq -e '.[] | select(.name=="Radarr")' >/dev/null 2>&1; then
+    ok "Radarr application var"
+  else
+    warn "Radarr application hâlâ yok"
+  fi
+}
+
 wait_for_prowlarr
 add_flaresolverr_proxy
-add_default_indexers
 add_sonarr_app
 add_radarr_app
 trigger_app_sync
+verify_apps
 
-ok "Prowlarr + FlareSolverr + Indexer modülü tamamlandı"
+ok "Prowlarr + FlareSolverr + Applications modülü tamamlandı"
