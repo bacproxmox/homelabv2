@@ -47,10 +47,8 @@ if [[ ! -f "$PART2_ENV" ]]; then
   cat > "$PART2_ENV" <<EOF
 TRUENAS_IP="192.168.50.101"
 TRUENAS_API_KEY="$TRUENAS_KEY"
-
 VM_STORAGE="nvme-vm"
 UBUNTU_ISO="local:iso/ubuntu-26.04-live-server-amd64.iso"
-
 GW="192.168.50.1"
 DNS="1.1.1.1"
 EOF
@@ -86,31 +84,18 @@ tn_put() {
     "$TN_API/$1"
 }
 
-tn_delete() {
-  curl -sk --connect-timeout 10 --max-time 30 \
-    -X DELETE \
-    -H "Authorization: Bearer ${TRUENAS_API_KEY}" \
-    "$TN_API/$1"
-}
-
 if ! done_step "truenas_api"; then
   echo "🔍 TrueNAS API kontrol ediliyor..."
 
   tn_get "system/info" >/tmp/truenas-info.json || {
     echo "❌ TrueNAS API erişimi başarısız."
-    echo "Düzeltmek için:"
-    echo "rm -f $PART2_ENV"
-    echo "bash install.sh"
-    echo "seçim: 2"
+    echo "rm -f $PART2_ENV ile API key'i sıfırlayabilirsin."
     exit 1
   }
 
-  if grep -qi "authentication" /tmp/truenas-info.json || grep -qi "unauthorized" /tmp/truenas-info.json; then
-    echo "❌ TrueNAS API key hatalı görünüyor."
-    echo "Düzeltmek için:"
+  if grep -qi "authentication\|unauthorized" /tmp/truenas-info.json; then
+    echo "❌ TrueNAS API key hatalı."
     echo "rm -f $PART2_ENV"
-    echo "bash install.sh"
-    echo "seçim: 2"
     exit 1
   fi
 
@@ -134,9 +119,6 @@ if ! done_step "truenas_datasets"; then
 
   echo "📦 Ana datasetler oluşturuluyor..."
 
-  # ÖNEMLİ:
-  # tank/media altındaki downloads/movies/series/music DATASET OLMAYACAK.
-  # Bunlar normal klasör olacak.
   for ds in \
     "tank/media" \
     "tank/photos" \
@@ -145,7 +127,7 @@ if ! done_step "truenas_datasets"; then
     "private/photos" \
     "private/timemachine"
   do
-    tn_post "pool/dataset" "{\"name\": \"${ds}\", \"share_type\": \"GENERIC\"}" >/dev/null || true
+    tn_post "pool/dataset" "{\"name\":\"${ds}\",\"share_type\":\"GENERIC\"}" >/dev/null || true
   done
 
   echo "📁 Media alt klasörleri normal klasör olarak oluşturuluyor..."
@@ -160,13 +142,24 @@ if ! done_step "truenas_datasets"; then
     "/mnt/tank/media/series" \
     "/mnt/tank/media/music"
   do
-    tn_post "filesystem/mkdir" "{\"path\": \"${folder}\"}" >/dev/null || true
+    tn_post "filesystem/mkdir" "{\"path\":\"${folder}\"}" >/dev/null || true
   done
 
-  echo "🔐 Dataset ownership/ACL hazırlanıyor..."
+  echo "🔐 Ownership/permission hazırlanıyor..."
 
   tn_post "filesystem/chown" "{
     \"path\": \"/mnt/tank/media\",
+    \"uid\": ${MEDIA_UID},
+    \"gid\": ${MEDIA_GID},
+    \"options\": {
+      \"recursive\": true,
+      \"traverse\": true
+    }
+  }" >/dev/null || true
+
+  tn_post "filesystem/setperm" "{
+    \"path\": \"/mnt/tank/media\",
+    \"mode\": \"775\",
     \"uid\": ${MEDIA_UID},
     \"gid\": ${MEDIA_GID},
     \"options\": {
@@ -183,19 +176,19 @@ if ! done_step "truenas_datasets"; then
 import json
 from pathlib import Path
 
-data = json.loads(Path("/tmp/truenas-nfs.json").read_text() or "[]")
 target = "/mnt/tank/media"
+data = json.loads(Path("/tmp/truenas-nfs.json").read_text() or "[]")
 
 for item in data:
     paths = item.get("paths") or []
     path = item.get("path")
-    if target in paths or path == target:
+    if target == path or target in paths:
         print(item.get("id", ""))
         break
 PY
 )"
 
-  NFS_PAYLOAD="{
+  NFS_PAYLOAD_PATHS="{
     \"paths\": [\"/mnt/tank/media\"],
     \"comment\": \"tank media NFS\",
     \"enabled\": true,
@@ -205,19 +198,62 @@ PY
     \"ro\": false
   }"
 
+  NFS_PAYLOAD_PATH="{
+    \"path\": \"/mnt/tank/media\",
+    \"comment\": \"tank media NFS\",
+    \"enabled\": true,
+    \"networks\": [\"192.168.50.0/24\"],
+    \"mapall_user\": \"${MEDIA_USER}\",
+    \"mapall_group\": \"${MEDIA_USER}\",
+    \"ro\": false
+  }"
+
   if [[ -n "${EXISTING_NFS_ID:-}" ]]; then
-    echo "🔁 Mevcut NFS share güncelleniyor: ID ${EXISTING_NFS_ID}"
-    tn_put "sharing/nfs/id/${EXISTING_NFS_ID}" "$NFS_PAYLOAD" >/tmp/truenas-nfs-update.json || true
+    echo "🔁 Mevcut NFS share güncelleniyor: ID $EXISTING_NFS_ID"
+
+    if ! tn_put "sharing/nfs/id/${EXISTING_NFS_ID}" "$NFS_PAYLOAD_PATHS" >/tmp/nfs-update.json; then
+      tn_put "sharing/nfs/id/${EXISTING_NFS_ID}" "$NFS_PAYLOAD_PATH" >/tmp/nfs-update.json || true
+    fi
   else
     echo "➕ Yeni NFS share oluşturuluyor"
-    tn_post "sharing/nfs" "$NFS_PAYLOAD" >/tmp/truenas-nfs-create.json || true
+
+    if ! tn_post "sharing/nfs" "$NFS_PAYLOAD_PATHS" >/tmp/nfs-create.json; then
+      tn_post "sharing/nfs" "$NFS_PAYLOAD_PATH" >/tmp/nfs-create.json || true
+    fi
+  fi
+
+  echo "🔎 NFS share doğrulanıyor..."
+
+  tn_get "sharing/nfs" >/tmp/truenas-nfs-after.json || echo "[]" >/tmp/truenas-nfs-after.json
+
+  if python3 - <<'PY'
+import json, sys
+from pathlib import Path
+
+target = "/mnt/tank/media"
+data = json.loads(Path("/tmp/truenas-nfs-after.json").read_text() or "[]")
+
+for item in data:
+    paths = item.get("paths") or []
+    path = item.get("path")
+    if target == path or target in paths:
+        sys.exit(0)
+
+sys.exit(1)
+PY
+  then
+    echo "✅ NFS share doğrulandı: /mnt/tank/media"
+  else
+    echo "❌ NFS share doğrulanamadı. TrueNAS API response:"
+    cat /tmp/truenas-nfs-after.json
+    exit 1
   fi
 
   echo "🔧 NFS servisi aktif ediliyor..."
 
-  tn_put "service/id/nfs" "{\"enable\": true}" >/dev/null || true
-  tn_post "service/start" "{\"service\": \"nfs\"}" >/dev/null || true
-  tn_post "service/restart" "{\"service\": \"nfs\"}" >/dev/null || true
+  tn_put "service/id/nfs" "{\"enable\":true}" >/dev/null || true
+  tn_post "service/start" "{\"service\":\"nfs\"}" >/dev/null || true
+  tn_post "service/restart" "{\"service\":\"nfs\"}" >/dev/null || true
 
   mark_step "truenas_datasets"
   echo "✅ TrueNAS dataset/NFS tamam"
@@ -315,7 +351,6 @@ add_vm107_chia_passthrough() {
 
   if [[ -n "$gpu" ]]; then
     base="$(echo "$gpu" | sed -E 's/\.[0-9]$//')"
-
     audio="$(lspci -Dnn | grep -Ei "${base}\.1.*NVIDIA.*Audio|${base}\.1.*High Definition Audio" | awk '{print $1}' | head -n1 || true)"
 
     add_hostpci 107 "$idx" "$gpu" "pcie=1,x-vga=0,rombar=1"
@@ -326,21 +361,19 @@ add_vm107_chia_passthrough() {
       idx=$((idx + 1))
     fi
   else
-    echo "⚠️ RTX 3060 / NVIDIA GPU bulunamadı, VM107 GPU passthrough atlandı"
+    echo "⚠️ RTX 3060 / NVIDIA GPU bulunamadı"
   fi
 
   echo "🔎 VM107 için JMicron JMB58x AHCI SATA controller aranıyor..."
 
   mapfile -t sata_list < <(find_all_pci_by_regex 'JMicron.*JMB58.*AHCI|JMicron.*AHCI SATA|JMB58x.*AHCI SATA|JMicron Technology.*JMB58.*SATA')
 
-  if [[ "${#sata_list[@]}" -eq 0 ]]; then
-    echo "⚠️ JMicron JMB58x SATA controller bulunamadı"
-  fi
-
   for sata in "${sata_list[@]}"; do
     add_hostpci 107 "$idx" "$sata" "pcie=1,rombar=1"
     idx=$((idx + 1))
   done
+
+  [[ "${#sata_list[@]}" -gt 0 ]] || echo "⚠️ JMicron SATA controller bulunamadı"
 }
 
 if ! done_step "vms"; then
@@ -392,7 +425,7 @@ echo "DNS: 1.1.1.1"
 echo "Username: ${BACMASTER_USER}"
 echo "Password: Part1'de verdiğin admin password"
 echo
-echo "Her Ubuntu kurulumu bitince ilgili VM için:"
+echo "Her Ubuntu kurulumu bitince:"
 echo "qm stop VMID"
 echo "qm set VMID --ide2 none"
 echo "qm set VMID --boot order=scsi0"
@@ -401,4 +434,3 @@ echo
 echo "Tüm VM'ler kurulduktan sonra Part3:"
 echo "cd /root/homelab && bash install.sh"
 echo "seçim: 3"
-echo
